@@ -1,42 +1,48 @@
-#![warn(clippy::pedantic)]
+#![warn(clippy::pedantic, missing_debug_implementations, missing_docs)]
+
+//! A doubly-linked syntax tree.
+//!
+//! Offers functionality similar to [`std::collections::LinkedList`](https://doc.rust-lang.org/std/collections/struct.LinkedList.html).
+//!
+//! Some code:
+//! ```text
+//! x = -10
+//! loop
+//!     x = x + 1
+//!     if x
+//!         break
+//! x = 2
+//! ```
+//! can be represented as:
+//! ```text
+//! ┌──────────┐
+//! │x = -10   │
+//! └──────────┘
+//! │
+//! ┌──────────┐
+//! │loop      │
+//! └──────────┘
+//! │           ╲
+//! ┌──────────┐ ┌─────────┐
+//! │x = 2     │ │x = x + 1│
+//! └──────────┘ └─────────┘
+//!              │
+//!              ┌─────────┐
+//!              │if x     │
+//!              └─────────┘
+//!                         ╲
+//!                          ┌─────────┐
+//!                          │break    │
+//!                          └─────────┘
+//! ```
+//!
+//! I personally am using this to contain an AST for compile-time evaluate.
 
 use std::alloc;
 use std::ptr;
 use std::ptr::NonNull;
 
 /// A doubly-linked syntax tree.
-///
-/// E.g.
-/// ```text
-/// x = -10
-/// loop
-///     x = x + 1
-///     if x
-///         break
-/// x = 2
-/// ```
-/// can be represented as:
-/// ```text
-/// ┌──────────┐
-/// │x = -10   │
-/// └──────────┘
-/// │
-/// ┌──────────┐
-/// │loop      │
-/// └──────────┘
-/// │           ╲
-/// ┌──────────┐ ┌─────────┐
-/// │x = 2     │ │x = x + 1│
-/// └──────────┘ └─────────┘
-///              │
-///              ┌─────────┐
-///              │if x     │
-///              └─────────┘
-///                         ╲
-///                          ┌─────────┐
-///                          │break    │
-///                          └─────────┘
-/// ```
 #[allow(clippy::module_name_repetitions)]
 #[derive(Debug)]
 pub struct SyntaxTree<T> {
@@ -156,6 +162,7 @@ impl<T: Clone> Clone for SyntaxTree<T> {
 }
 
 /// Iterates through elements depth-first in a [`SyntaxTree`] returning references.
+#[derive(Debug)]
 pub struct Iter<'a, T> {
     stack: Vec<NonNull<Node<T>>>,
     __marker: &'a SyntaxTree<T>,
@@ -181,6 +188,7 @@ impl<'a, T> Iterator for Iter<'a, T> {
 }
 
 /// Iterates through elements depth-first in a [`SyntaxTree`] returning mutable references.
+#[derive(Debug)]
 pub struct IterMut<'a, T> {
     stack: Vec<NonNull<Node<T>>>,
     __marker: &'a mut SyntaxTree<T>,
@@ -204,6 +212,7 @@ impl<'a, T> Iterator for IterMut<'a, T> {
 }
 
 /// Roughly matches [`std::collections::linked_list::Cursor`].
+#[derive(Debug)]
 pub struct Cursor<'a, T> {
     previous: Option<NonNull<Node<T>>>,
     current: Option<NonNull<Node<T>>>,
