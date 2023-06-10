@@ -1,5 +1,8 @@
 # linked-syntax-tree
 
+[![Crates.io](https://img.shields.io/crates/v/linked-syntax-tree)](https://crates.io/crates/linked-syntax-tree)
+[![docs](https://img.shields.io/crates/v/linked-syntax-tree?color=yellow&label=docs)](https://docs.rs/linked-syntax-tree)
+
 A doubly-linked syntax tree.
 
 Offers functionality similar to [`std::collections::LinkedList`](https://doc.rust-lang.org/std/collections/struct.LinkedList.html).
