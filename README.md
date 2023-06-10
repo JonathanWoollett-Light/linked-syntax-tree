@@ -1,4 +1,4 @@
-# syntax-tree
+# linked-syntax-tree
 
 A doubly-linked syntax tree.
 
