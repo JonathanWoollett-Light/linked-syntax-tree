@@ -251,6 +251,15 @@ impl<T> Cursor<'_, T> {
         }
     }
 
+    /// Moves the cursor to the child element.
+    pub fn move_child(&mut self) {
+        if let Some(current) = self.current {
+            self.previous = Some(current);
+            let opt = unsafe { current.as_ref().child.as_ref() };
+            self.current = opt.copied();
+        }
+    }
+
     /// Returns a reference to the next element.
     #[must_use]
     pub fn peek_next(&self) -> Option<&T> {
