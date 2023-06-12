@@ -160,6 +160,24 @@ impl<T: Clone> Clone for SyntaxTree<T> {
         }
     }
 }
+impl<T> From<T> for SyntaxTree<T> {
+    fn from(element: T) -> Self {
+        let ptr = unsafe {
+            let ptr = alloc::alloc(alloc::Layout::new::<Node<T>>()).cast();
+            ptr::write(
+                ptr,
+                Node {
+                    element,
+                    predecessor: None,
+                    child: None,
+                    next: None,
+                },
+            );
+            NonNull::new_unchecked(ptr)
+        };
+        Self { root: Some(ptr) }
+    }
+}
 
 /// Iterates through elements depth-first in a [`SyntaxTree`] returning references.
 #[derive(Debug)]
