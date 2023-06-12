@@ -87,7 +87,7 @@ impl<T> SyntaxTree<T> {
     #[must_use]
     pub fn iter(&self) -> Iter<'_, T> {
         let stack = if let Some(root) = self.root {
-            vec![root]
+            vec![(root, 0)]
         } else {
             Vec::new()
         };
@@ -100,7 +100,7 @@ impl<T> SyntaxTree<T> {
     /// Returns a depth-first iterator with mutable references.
     pub fn iter_mut(&mut self) -> IterMut<'_, T> {
         let stack = if let Some(root) = self.root {
-            vec![root]
+            vec![(root, 0)]
         } else {
             Vec::new()
         };
@@ -164,22 +164,25 @@ impl<T: Clone> Clone for SyntaxTree<T> {
 /// Iterates through elements depth-first in a [`SyntaxTree`] returning references.
 #[derive(Debug)]
 pub struct Iter<'a, T> {
-    stack: Vec<NonNull<Node<T>>>,
+    stack: Vec<(NonNull<Node<T>>, usize)>,
     __marker: &'a SyntaxTree<T>,
 }
 impl<'a, T> Iterator for Iter<'a, T> {
-    type Item = &'a T;
+    type Item = Element<&'a T>;
     fn next(&mut self) -> Option<Self::Item> {
         let current_opt = self.stack.pop();
         unsafe {
-            if let Some(current) = current_opt {
+            if let Some((current, depth)) = current_opt {
                 if let Some(next) = current.as_ref().next {
-                    self.stack.push(next);
+                    self.stack.push((next, depth));
                 }
                 if let Some(child) = current.as_ref().child {
-                    self.stack.push(child);
+                    self.stack.push((child, depth + 1));
                 }
-                Some(&current.as_ref().element)
+                Some(Element {
+                    item: &current.as_ref().element,
+                    depth,
+                })
             } else {
                 None
             }
@@ -190,25 +193,39 @@ impl<'a, T> Iterator for Iter<'a, T> {
 /// Iterates through elements depth-first in a [`SyntaxTree`] returning mutable references.
 #[derive(Debug)]
 pub struct IterMut<'a, T> {
-    stack: Vec<NonNull<Node<T>>>,
+    stack: Vec<(NonNull<Node<T>>, usize)>,
     __marker: &'a mut SyntaxTree<T>,
 }
 impl<'a, T> Iterator for IterMut<'a, T> {
-    type Item = &'a mut T;
+    type Item = Element<&'a mut T>;
     fn next(&mut self) -> Option<Self::Item> {
         let current_opt = self.stack.pop();
         unsafe {
-            if let Some(current) = current_opt {
+            if let Some((mut current, depth)) = current_opt {
                 if let Some(next) = current.as_ref().next {
-                    self.stack.push(next);
+                    self.stack.push((next, depth));
                 }
                 if let Some(child) = current.as_ref().child {
-                    self.stack.push(child);
+                    self.stack.push((child, depth + 1));
                 }
+                Some(Element {
+                    item: &mut current.as_mut().element,
+                    depth,
+                })
+            } else {
+                None
             }
-            current_opt.map(|mut c| &mut c.as_mut().element)
         }
     }
+}
+
+/// An element in a [`SyntaxTree`] with a known depth.
+#[derive(Debug, Eq, PartialEq)]
+pub struct Element<T> {
+    /// The data within the node.
+    pub item: T,
+    /// The depth of the node.
+    pub depth: usize,
 }
 
 /// Roughly matches [`std::collections::linked_list::Cursor`].
@@ -953,45 +970,45 @@ mod tests {
 
         tree.cursor_mut().insert_after(1);
         let mut iter = tree.iter();
-        assert_eq!(iter.next(), Some(&1));
+        assert_eq!(iter.next(), Some(Element { item: &1, depth: 0 }));
         assert_eq!(iter.next(), None);
         assert_eq!(iter.next(), None);
         assert_eq!(tree.len(), 1);
 
         tree.cursor_mut().insert_before(2);
         let mut iter = tree.iter();
-        assert_eq!(iter.next(), Some(&2));
-        assert_eq!(iter.next(), Some(&1));
+        assert_eq!(iter.next(), Some(Element { item: &2, depth: 0 }));
+        assert_eq!(iter.next(), Some(Element { item: &1, depth: 0 }));
         assert_eq!(iter.next(), None);
         assert_eq!(iter.next(), None);
         assert_eq!(tree.len(), 2);
 
         tree.cursor_mut().insert_after(3);
         let mut iter = tree.iter();
-        assert_eq!(iter.next(), Some(&2));
-        assert_eq!(iter.next(), Some(&3));
-        assert_eq!(iter.next(), Some(&1));
+        assert_eq!(iter.next(), Some(Element { item: &2, depth: 0 }));
+        assert_eq!(iter.next(), Some(Element { item: &3, depth: 0 }));
+        assert_eq!(iter.next(), Some(Element { item: &1, depth: 0 }));
         assert_eq!(iter.next(), None);
         assert_eq!(iter.next(), None);
         assert_eq!(tree.len(), 3);
 
         tree.cursor_mut().insert_before(4);
         let mut iter = tree.iter();
-        assert_eq!(iter.next(), Some(&4));
-        assert_eq!(iter.next(), Some(&2));
-        assert_eq!(iter.next(), Some(&3));
-        assert_eq!(iter.next(), Some(&1));
+        assert_eq!(iter.next(), Some(Element { item: &4, depth: 0 }));
+        assert_eq!(iter.next(), Some(Element { item: &2, depth: 0 }));
+        assert_eq!(iter.next(), Some(Element { item: &3, depth: 0 }));
+        assert_eq!(iter.next(), Some(Element { item: &1, depth: 0 }));
         assert_eq!(iter.next(), None);
         assert_eq!(iter.next(), None);
         assert_eq!(tree.len(), 4);
 
         tree.cursor_mut().insert_after(5);
         let mut iter = tree.iter();
-        assert_eq!(iter.next(), Some(&4));
-        assert_eq!(iter.next(), Some(&5));
-        assert_eq!(iter.next(), Some(&2));
-        assert_eq!(iter.next(), Some(&3));
-        assert_eq!(iter.next(), Some(&1));
+        assert_eq!(iter.next(), Some(Element { item: &4, depth: 0 }));
+        assert_eq!(iter.next(), Some(Element { item: &5, depth: 0 }));
+        assert_eq!(iter.next(), Some(Element { item: &2, depth: 0 }));
+        assert_eq!(iter.next(), Some(Element { item: &3, depth: 0 }));
+        assert_eq!(iter.next(), Some(Element { item: &1, depth: 0 }));
         assert_eq!(iter.next(), None);
         assert_eq!(tree.len(), 5);
     }
@@ -1014,12 +1031,12 @@ mod tests {
 
         // Its easier to use the iterator to compare here.
         let mut iter = tree_one.iter();
-        assert_eq!(iter.next(), Some(&1));
-        assert_eq!(iter.next(), Some(&4));
-        assert_eq!(iter.next(), Some(&6));
-        assert_eq!(iter.next(), Some(&5));
-        assert_eq!(iter.next(), Some(&3));
-        assert_eq!(iter.next(), Some(&2));
+        assert_eq!(iter.next(), Some(Element { item: &1, depth: 0 }));
+        assert_eq!(iter.next(), Some(Element { item: &4, depth: 0 }));
+        assert_eq!(iter.next(), Some(Element { item: &6, depth: 0 }));
+        assert_eq!(iter.next(), Some(Element { item: &5, depth: 0 }));
+        assert_eq!(iter.next(), Some(Element { item: &3, depth: 0 }));
+        assert_eq!(iter.next(), Some(Element { item: &2, depth: 0 }));
         assert_eq!(iter.next(), None);
         assert_eq!(iter.next(), None);
 
@@ -1028,16 +1045,16 @@ mod tests {
         cursor.move_next();
         let tree_three = cursor.split_after();
         let mut iter = tree_one.iter();
-        assert_eq!(iter.next(), Some(&1));
-        assert_eq!(iter.next(), Some(&4));
-        assert_eq!(iter.next(), Some(&6));
+        assert_eq!(iter.next(), Some(Element { item: &1, depth: 0 }));
+        assert_eq!(iter.next(), Some(Element { item: &4, depth: 0 }));
+        assert_eq!(iter.next(), Some(Element { item: &6, depth: 0 }));
         assert_eq!(iter.next(), None);
         assert_eq!(iter.next(), None);
 
         let mut iter = tree_three.iter();
-        assert_eq!(iter.next(), Some(&5));
-        assert_eq!(iter.next(), Some(&3));
-        assert_eq!(iter.next(), Some(&2));
+        assert_eq!(iter.next(), Some(Element { item: &5, depth: 0 }));
+        assert_eq!(iter.next(), Some(Element { item: &3, depth: 0 }));
+        assert_eq!(iter.next(), Some(Element { item: &2, depth: 0 }));
         assert_eq!(iter.next(), None);
         assert_eq!(iter.next(), None);
     }
@@ -1059,12 +1076,12 @@ mod tests {
 
         // Its easier to use the iterator to compare here.
         let mut iter = tree_one.iter();
-        assert_eq!(iter.next(), Some(&4));
-        assert_eq!(iter.next(), Some(&6));
-        assert_eq!(iter.next(), Some(&5));
-        assert_eq!(iter.next(), Some(&1));
-        assert_eq!(iter.next(), Some(&3));
-        assert_eq!(iter.next(), Some(&2));
+        assert_eq!(iter.next(), Some(Element { item: &4, depth: 0 }));
+        assert_eq!(iter.next(), Some(Element { item: &6, depth: 0 }));
+        assert_eq!(iter.next(), Some(Element { item: &5, depth: 0 }));
+        assert_eq!(iter.next(), Some(Element { item: &1, depth: 0 }));
+        assert_eq!(iter.next(), Some(Element { item: &3, depth: 0 }));
+        assert_eq!(iter.next(), Some(Element { item: &2, depth: 0 }));
         assert_eq!(iter.next(), None);
         assert_eq!(iter.next(), None);
 
@@ -1074,16 +1091,16 @@ mod tests {
         cursor.move_next();
         let tree_three = cursor.split_before();
         let mut iter = tree_one.iter();
-        assert_eq!(iter.next(), Some(&1));
-        assert_eq!(iter.next(), Some(&3));
-        assert_eq!(iter.next(), Some(&2));
+        assert_eq!(iter.next(), Some(Element { item: &1, depth: 0 }));
+        assert_eq!(iter.next(), Some(Element { item: &3, depth: 0 }));
+        assert_eq!(iter.next(), Some(Element { item: &2, depth: 0 }));
         assert_eq!(iter.next(), None);
         assert_eq!(iter.next(), None);
 
         let mut iter = tree_three.iter();
-        assert_eq!(iter.next(), Some(&4));
-        assert_eq!(iter.next(), Some(&6));
-        assert_eq!(iter.next(), Some(&5));
+        assert_eq!(iter.next(), Some(Element { item: &4, depth: 0 }));
+        assert_eq!(iter.next(), Some(Element { item: &6, depth: 0 }));
+        assert_eq!(iter.next(), Some(Element { item: &5, depth: 0 }));
         assert_eq!(iter.next(), None);
         assert_eq!(iter.next(), None);
     }
