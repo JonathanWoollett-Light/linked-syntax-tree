@@ -3,9 +3,9 @@
 //! A doubly-linked syntax tree.
 //!
 //! Offers functionality similar to [`std::collections::LinkedList`](https://doc.rust-lang.org/std/collections/struct.LinkedList.html).
-//! 
+//!
 //! ## Example
-//! 
+//!
 //! ```text
 //! x = -10
 //! loop
@@ -14,9 +14,9 @@
 //!         break
 //! x = 2
 //! ```
-//! 
+//!
 //! can be represented as:
-//! 
+//!
 //! ```text
 //! ┌──────────┐
 //! │x = -10   │
@@ -38,21 +38,22 @@
 //!                          │break    │
 //!                          └─────────┘
 //! ```
-//! 
+//!
 //! ## Terminology
-//! 
+//!
 //! - **next**: `loop` is the *next* element of `x = -10`.
 //! - **previous**: `x = -10` is the *previous* element of `loop`.
 //! - **child**: `x = x + 1` is the *child* element of `loop`.
 //! - **parent**: `loop` is the *parent* element of `x = x + 1`.
 //! - **predecessor**: All *previous* elements and *parent* elements are *predecessor* elements.
 //!   A *predecessor* element may be a *previous* element or a *parent* element.
-//! 
+//!
 //! ## Use-case
-//! 
+//!
 //! I'm using this to contain an AST for compile-time evaluation in my personal WIP language.
 
 use std::alloc;
+use std::fmt;
 use std::ptr;
 use std::ptr::NonNull;
 
@@ -61,6 +62,18 @@ use std::ptr::NonNull;
 #[derive(Debug)]
 pub struct SyntaxTree<T> {
     root: Option<NonNull<Node<T>>>,
+}
+
+const INDENT: &str = "    ";
+
+impl<T: fmt::Display> fmt::Display for SyntaxTree<T> {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        let mut iter = self.iter();
+        while let Some(Element { item, depth }) = iter.next() {
+            writeln!(f, "{}{item}", INDENT.repeat(depth))?;
+        }
+        Ok(())
+    }
 }
 
 type NodePredecessor<T> = Predecessor<NonNull<Node<T>>>;
@@ -366,7 +379,6 @@ impl<'a, T> std::ops::Deref for CursorMut<'a, T> {
         unsafe { &*(self as *const CursorMut<'_, T>).cast() }
     }
 }
-
 impl<'a, T> std::ops::DerefMut for CursorMut<'a, T> {
     fn deref_mut(&mut self) -> &mut Self::Target {
         // Is this safe? I don't know, but it sure avoids code duplication.
@@ -549,7 +561,7 @@ impl<T> CursorMut<'_, T> {
     }
 
     /// Inserts an element as a child of the current element.
-    /// 
+    ///
     /// If the cursor has `None` current element it is set to the inserted element.
     pub fn insert_child(&mut self, item: T) {
         let ptr = unsafe { alloc::alloc(alloc::Layout::new::<Node<T>>()).cast::<Node<T>>() };
@@ -568,7 +580,7 @@ impl<T> CursorMut<'_, T> {
                 if let Some(mut child) = current.as_ref().child {
                     child.as_mut().predecessor = Some(Predecessor::Previous(ptr));
                 }
-                current.as_mut().next = Some(ptr);
+                current.as_mut().child = Some(ptr);
             },
             (None, Some(predecessor)) => match predecessor {
                 Predecessor::Parent(mut parent) => unsafe {
@@ -921,6 +933,124 @@ struct Node<T> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn display() {
+        let mut tree = SyntaxTree::<u8>::default();
+        let mut cursor = tree.cursor_mut();
+        assert_eq!(cursor.peek_pred(), None);
+        assert_eq!(cursor.current(), None);
+        assert_eq!(cursor.peek_next(), None);
+        assert_eq!(cursor.peek_child(), None);
+
+        cursor.insert_next(0);
+        assert_eq!(cursor.peek_pred(), None);
+        assert_eq!(cursor.current(), Some(&0));
+        assert_eq!(cursor.peek_next(), None);
+        assert_eq!(cursor.peek_child(), None);
+
+        cursor.insert_child(1);
+        assert_eq!(cursor.peek_pred(), None);
+        assert_eq!(cursor.current(), Some(&0));
+        assert_eq!(cursor.peek_next(), None);
+        assert_eq!(cursor.peek_child(), Some(&1));
+
+        cursor.move_child();
+        assert_eq!(cursor.peek_pred(), Some(&0));
+        assert_eq!(cursor.current(), Some(&1));
+        assert_eq!(cursor.peek_next(), None);
+        assert_eq!(cursor.peek_child(), None);
+
+        cursor.insert_next(2);
+        assert_eq!(cursor.peek_pred(), Some(&0));
+        assert_eq!(cursor.current(), Some(&1));
+        assert_eq!(cursor.peek_next(), Some(&2));
+        assert_eq!(cursor.peek_child(), None);
+
+        cursor.move_next();
+        assert_eq!(cursor.peek_pred(), Some(&1));
+        assert_eq!(cursor.current(), Some(&2));
+        assert_eq!(cursor.peek_next(), None);
+        assert_eq!(cursor.peek_child(), None);
+
+        cursor.insert_child(3);
+        assert_eq!(cursor.peek_pred(), Some(&1));
+        assert_eq!(cursor.current(), Some(&2));
+        assert_eq!(cursor.peek_next(), None);
+        assert_eq!(cursor.peek_child(), Some(&3));
+
+        cursor.move_parent();
+        assert_eq!(cursor.peek_pred(), None);
+        assert_eq!(cursor.current(), Some(&0));
+        assert_eq!(cursor.peek_next(), None);
+        assert_eq!(cursor.peek_child(), Some(&1));
+
+        cursor.insert_next(4);
+        assert_eq!(cursor.peek_pred(), None);
+        assert_eq!(cursor.current(), Some(&0));
+        assert_eq!(cursor.peek_next(), Some(&4));
+        assert_eq!(cursor.peek_child(), Some(&1));
+
+        cursor.move_next();
+        assert_eq!(cursor.peek_pred(), Some(&0));
+        assert_eq!(cursor.current(), Some(&4));
+        assert_eq!(cursor.peek_next(), None);
+        assert_eq!(cursor.peek_child(), None);
+
+        cursor.insert_child(5);
+        assert_eq!(cursor.peek_pred(), Some(&0));
+        assert_eq!(cursor.current(), Some(&4));
+        assert_eq!(cursor.peek_next(), None);
+        assert_eq!(cursor.peek_child(), Some(&5));
+
+        cursor.move_child();
+        assert_eq!(cursor.peek_pred(), Some(&4));
+        assert_eq!(cursor.current(), Some(&5));
+        assert_eq!(cursor.peek_next(), None);
+        assert_eq!(cursor.peek_child(), None);
+
+        cursor.insert_next(6);
+        assert_eq!(cursor.peek_pred(), Some(&4));
+        assert_eq!(cursor.current(), Some(&5));
+        assert_eq!(cursor.peek_next(), Some(&6));
+        assert_eq!(cursor.peek_child(), None);
+
+        cursor.move_next();
+        assert_eq!(cursor.peek_pred(), Some(&5));
+        assert_eq!(cursor.current(), Some(&6));
+        assert_eq!(cursor.peek_next(), None);
+        assert_eq!(cursor.peek_child(), None);
+
+        cursor.insert_child(7);
+        assert_eq!(cursor.peek_pred(), Some(&5));
+        assert_eq!(cursor.current(), Some(&6));
+        assert_eq!(cursor.peek_next(), None);
+        assert_eq!(cursor.peek_child(), Some(&7));
+
+        let mut iter = tree.iter();
+        assert_eq!(iter.next(), Some(Element { item: &0, depth: 0 }));
+        assert_eq!(iter.next(), Some(Element { item: &1, depth: 1 }));
+        assert_eq!(iter.next(), Some(Element { item: &2, depth: 1 }));
+        assert_eq!(iter.next(), Some(Element { item: &3, depth: 2 }));
+        assert_eq!(iter.next(), Some(Element { item: &4, depth: 0 }));
+        assert_eq!(iter.next(), Some(Element { item: &5, depth: 1 }));
+        assert_eq!(iter.next(), Some(Element { item: &6, depth: 1 }));
+        assert_eq!(iter.next(), Some(Element { item: &7, depth: 2 }));
+
+        let expected = format!(
+            "\
+            0\n\
+            {INDENT}1\n\
+            {INDENT}2\n\
+            {INDENT}{INDENT}3\n\
+            4\n\
+            {INDENT}5\n\
+            {INDENT}6\n\
+            {INDENT}{INDENT}7\n\
+        "
+        );
+        assert_eq!(tree.to_string(), expected);
+    }
 
     #[test]
     fn insert_predecessor() {
