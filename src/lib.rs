@@ -334,11 +334,10 @@ impl<T: std::fmt::Debug> Cursor<'_, T> {
         }
     }
 
-    /// Moves the cursor to the successor element or the next element of the root element if a
-    /// successor is not present.
+    /// Moves the cursor to the successor element or the root element if a successor is not present.
     ///
-    /// Returns `true` if the cursor was moved to a successor or `false` if
-    /// not.
+    /// Returns `true` if the cursor was moved to a successor or `false` if it was moved to the root
+    /// element.
     pub fn move_successor(&mut self) -> bool {
         if self.peek_child().is_some() {
             self.move_child();
@@ -348,7 +347,9 @@ impl<T: std::fmt::Debug> Cursor<'_, T> {
             true
         } else {
             let parent = self.move_parent();
-            self.move_next();
+            if parent && self.peek_next().is_some() {
+                self.move_next();
+            }
             parent
         }
     }
