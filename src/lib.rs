@@ -347,10 +347,11 @@ impl<T: std::fmt::Debug> Cursor<'_, T> {
             true
         } else {
             let parent = self.move_parent();
-            if parent && self.peek_next().is_some() {
+            let cond = parent && self.peek_next().is_some();
+            if cond {
                 self.move_next();
             }
-            parent
+            cond
         }
     }
 
