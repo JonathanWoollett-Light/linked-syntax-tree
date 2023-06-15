@@ -47,6 +47,8 @@
 //! - **parent**: `loop` is the *parent* element of `x = x + 1`.
 //! - **predecessor**: All *previous* elements and *parent* elements are *predecessor* elements.
 //!   A *predecessor* element may be a *previous* element or a *parent* element.
+//! - **successor**: The next element if the tree is flattened e.g. `x = 2` is the *successor* of
+//!   `break`.
 //!
 //! ## Use-case
 //!
@@ -332,10 +334,30 @@ impl<T: std::fmt::Debug> Cursor<'_, T> {
         }
     }
 
+    /// Moves the cursor to the successor element or the next element of the root element if a
+    /// successor is not present.
+    ///
+    /// Returns `true` if the cursor was moved to a successor or `false` if
+    /// not.
+    pub fn move_successor(&mut self) -> bool {
+        if self.peek_child().is_some() {
+            self.move_child();
+            true
+        } else if self.peek_next().is_some() {
+            self.move_next();
+            true
+        } else {
+            let parent = self.move_parent();
+            self.move_next();
+            parent
+        }
+    }
+
     /// Moves the cursor through predecessor elements until reaching a parent or
     /// the root element.
     ///
-    /// Returns `true` if it found a parent, or `false` if it did not.
+    /// Returns `true` if the cursor was moved to a parent or `false` if it was moved to the root
+    /// element.
     pub fn move_parent(&mut self) -> bool {
         loop {
             match self.predecessor {
