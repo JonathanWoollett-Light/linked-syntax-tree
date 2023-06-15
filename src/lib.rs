@@ -335,6 +335,28 @@ impl<T: std::fmt::Debug> Cursor<'_, T> {
         }
     }
 
+    /// Moves the cursor through preceding elements until reaching a parent or
+    /// the root element.
+    ///
+    /// Returns `true` if the cursor was moved to a parent or `false` if it was moved to the root
+    /// element.
+    pub fn move_parent(&mut self) -> bool {
+        loop {
+            match self.preceding {
+                Some(Preceding::Previous(previous)) => {
+                    self.current = Some(previous);
+                    self.preceding = unsafe { previous.as_ref().preceding };
+                }
+                Some(Preceding::Parent(parent)) => {
+                    self.current = Some(parent);
+                    self.preceding = unsafe { parent.as_ref().preceding };
+                    break true;
+                }
+                None => break false,
+            }
+        }
+    }
+
     /// Moves the cursor to the successor element or the root element if a successor is not present.
     ///
     /// Returns `true` if the cursor was moved to a successor or `false` if it was moved to the root
@@ -356,25 +378,28 @@ impl<T: std::fmt::Debug> Cursor<'_, T> {
         }
     }
 
-    /// Moves the cursor through preceding elements until reaching a parent or
-    /// the root element.
+    /// Moves the cursor to the predecessor element or the root element if a predecessor is not
+    /// present.
     ///
-    /// Returns `true` if the cursor was moved to a parent or `false` if it was moved to the root
-    /// element.
-    pub fn move_parent(&mut self) -> bool {
-        loop {
-            match self.preceding {
-                Some(Preceding::Previous(previous)) => {
-                    self.current = Some(previous);
-                    self.preceding = unsafe { previous.as_ref().preceding };
-                }
-                Some(Preceding::Parent(parent)) => {
-                    self.current = Some(parent);
-                    self.preceding = unsafe { parent.as_ref().preceding };
-                    break true;
-                }
-                None => break false,
+    /// Returns `true` if the cursor was moved to a predecessor or `false` if it was moved to the
+    /// root element.
+    pub fn move_predecessor(&mut self) -> bool {
+        match self.peek_preceding() {
+            Some(Preceding::Parent(_)) => {
+                self.move_preceding();
+                true
             }
+            Some(Preceding::Previous(_)) => {
+                self.move_preceding();
+                while self.peek_child().is_some() {
+                    self.move_child();
+                    while self.peek_next().is_some() {
+                        self.move_next();
+                    }
+                }
+                true
+            }
+            None => false,
         }
     }
 
