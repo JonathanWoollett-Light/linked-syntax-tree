@@ -45,8 +45,10 @@
 //! - **previous**: `x = -10` is the *previous* element of `loop`.
 //! - **child**: `x = x + 1` is the *child* element of `loop`.
 //! - **parent**: `loop` is the *parent* element of `x = x + 1`.
-//! - **predecessor**: All *previous* elements and *parent* elements are *predecessor* elements.
-//!   A *predecessor* element may be a *previous* element or a *parent* element.
+//! - **preceding**: All *previous* elements and *parent* elements are *preceding* elements.
+//!   A *preceding* element may be a *previous* element or a *parent* element.
+//! - **predecessor**: The previous element if the tree is flattened e.g. `break` is the
+//!   *predecessor* of `x = 2`.
 //! - **successor**: The next element if the tree is flattened e.g. `x = 2` is the *successor* of
 //!   `break`.
 //!
@@ -78,14 +80,14 @@ impl<T: fmt::Display> fmt::Display for SyntaxTree<T> {
     }
 }
 
-type NodePredecessor<T> = Predecessor<NonNull<Node<T>>>;
+type NodePredecessor<T> = Preceding<NonNull<Node<T>>>;
 
 impl<T> SyntaxTree<T> {
     /// Provides a cursor at the front element.
     #[must_use]
     pub fn cursor(&self) -> Cursor<'_, T> {
         Cursor {
-            predecessor: None,
+            preceding: None,
             current: self.root,
             tree: self,
         }
@@ -94,7 +96,7 @@ impl<T> SyntaxTree<T> {
     /// Provides a cursor with editing operation at the root element.
     pub fn cursor_mut(&mut self) -> CursorMut<'_, T> {
         CursorMut {
-            predecessor: None,
+            preceding: None,
             current: self.root,
             tree: self,
         }
@@ -199,7 +201,7 @@ impl<T> From<T> for SyntaxTree<T> {
                 ptr,
                 Node {
                     element,
-                    predecessor: None,
+                    preceding: None,
                     child: None,
                     next: None,
                 },
@@ -280,14 +282,14 @@ pub struct Element<T> {
 /// Roughly matches [`std::collections::linked_list::Cursor`].
 #[derive(Debug)]
 pub struct Cursor<'a, T> {
-    predecessor: Option<NodePredecessor<T>>,
+    preceding: Option<NodePredecessor<T>>,
     current: Option<NonNull<Node<T>>>,
     tree: &'a SyntaxTree<T>,
 }
 impl<'a, T> Clone for Cursor<'a, T> {
     fn clone(&self) -> Self {
         Self {
-            predecessor: self.predecessor,
+            preceding: self.preceding,
             current: self.current,
             tree: self.tree,
         }
@@ -306,21 +308,20 @@ impl<T: std::fmt::Debug> Cursor<'_, T> {
         self.current.map(|ptr| unsafe { &ptr.as_ref().element })
     }
 
-    /// Moves the cursor to predecessor element.
+    /// Moves the cursor to the preceding element.
     ///
-    /// If there is no previous value, the cursor is not moved.
-    pub fn move_pred(&mut self) {
-        if let Some(predecessor) = self.predecessor {
-            self.current = Some(predecessor.unwrap());
-            self.predecessor =
-                unsafe { predecessor.unwrap().as_ref().predecessor.as_ref().copied() };
+    /// If there is no preceding element the cursor is not moved.
+    pub fn move_preceding(&mut self) {
+        if let Some(preceding) = self.preceding {
+            self.current = Some(preceding.unwrap());
+            self.preceding = unsafe { preceding.unwrap().as_ref().preceding.as_ref().copied() };
         }
     }
 
     /// Moves the cursor to the next element.
     pub fn move_next(&mut self) {
         if let Some(current) = self.current {
-            self.predecessor = Some(Predecessor::Previous(current));
+            self.preceding = Some(Preceding::Previous(current));
             self.current = unsafe { current.as_ref().next };
         }
     }
@@ -328,7 +329,7 @@ impl<T: std::fmt::Debug> Cursor<'_, T> {
     /// Moves the cursor to the child element.
     pub fn move_child(&mut self) {
         if let Some(current) = self.current {
-            self.predecessor = Some(Predecessor::Parent(current));
+            self.preceding = Some(Preceding::Parent(current));
             let opt = unsafe { current.as_ref().child.as_ref() };
             self.current = opt.copied();
         }
@@ -355,21 +356,21 @@ impl<T: std::fmt::Debug> Cursor<'_, T> {
         }
     }
 
-    /// Moves the cursor through predecessor elements until reaching a parent or
+    /// Moves the cursor through preceding elements until reaching a parent or
     /// the root element.
     ///
     /// Returns `true` if the cursor was moved to a parent or `false` if it was moved to the root
     /// element.
     pub fn move_parent(&mut self) -> bool {
         loop {
-            match self.predecessor {
-                Some(Predecessor::Previous(previous)) => {
+            match self.preceding {
+                Some(Preceding::Previous(previous)) => {
                     self.current = Some(previous);
-                    self.predecessor = unsafe { previous.as_ref().predecessor };
+                    self.preceding = unsafe { previous.as_ref().preceding };
                 }
-                Some(Predecessor::Parent(parent)) => {
+                Some(Preceding::Parent(parent)) => {
                     self.current = Some(parent);
-                    self.predecessor = unsafe { parent.as_ref().predecessor };
+                    self.preceding = unsafe { parent.as_ref().preceding };
                     break true;
                 }
                 None => break false,
@@ -389,25 +390,25 @@ impl<T: std::fmt::Debug> Cursor<'_, T> {
 
     /// Returns a reference to the parent element.
     ///
-    /// Wrapper around `self.peek_predecessor().and_then(Predecessor::parent)`.
+    /// Wrapper around `self.peek_preceding().and_then(Preceding::parent)`.
     #[must_use]
     pub fn peek_parent(&self) -> Option<&T> {
-        self.peek_predecessor().and_then(Predecessor::parent)
+        self.peek_preceding().and_then(Preceding::parent)
     }
 
     /// Returns a reference to the previous element.
     ///
-    /// Wrapper around `self.peek_predecessor().and_then(Predecessor::previous)`
+    /// Wrapper around `self.peek_preceding().and_then(Preceding::previous)`
     /// .
     #[must_use]
     pub fn peek_previous(&self) -> Option<&T> {
-        self.peek_predecessor().and_then(Predecessor::previous)
+        self.peek_preceding().and_then(Preceding::previous)
     }
 
-    /// Returns a reference to the predecessor element.
+    /// Returns a reference to the preceding element.
     #[must_use]
-    pub fn peek_predecessor(&self) -> Option<Predecessor<&T>> {
-        self.predecessor
+    pub fn peek_preceding(&self) -> Option<Preceding<&T>> {
+        self.preceding
             .map(|p| unsafe { p.map(|p| &p.as_ref().element) })
     }
 
@@ -440,7 +441,7 @@ impl<'a, T> std::ops::DerefMut for CursorMut<'a, T> {
 /// Roughly matches [`std::collections::linked_list::CursorMut`].
 #[derive(Debug)]
 pub struct CursorMut<'a, T> {
-    predecessor: Option<NodePredecessor<T>>,
+    preceding: Option<NodePredecessor<T>>,
     current: Option<NonNull<Node<T>>>,
     tree: &'a mut SyntaxTree<T>,
 }
@@ -462,46 +463,46 @@ impl<T> CursorMut<'_, T> {
     /// Inserts an element before the current element.
     ///
     /// If the cursor has `None` current element it is set to the inserted element.
-    pub fn insert_predecessor(&mut self, item: T) {
+    pub fn insert_preceding(&mut self, item: T) {
         let ptr = unsafe { alloc::alloc(alloc::Layout::new::<Node<T>>()).cast::<Node<T>>() };
-        match (self.current, self.predecessor) {
+        match (self.current, self.preceding) {
             (Some(mut current), Some(previous)) => unsafe {
                 ptr::write(
                     ptr,
                     Node {
                         element: item,
-                        predecessor: Some(previous),
+                        preceding: Some(previous),
                         child: None,
                         next: Some(current),
                     },
                 );
                 let ptr = NonNull::new(ptr).unwrap_unchecked();
                 match previous {
-                    Predecessor::Parent(mut parent) => {
+                    Preceding::Parent(mut parent) => {
                         parent.as_mut().child = Some(ptr);
                     }
-                    Predecessor::Previous(mut previous) => {
+                    Preceding::Previous(mut previous) => {
                         previous.as_mut().next = Some(ptr);
                     }
                 }
-                let pred = Some(Predecessor::Previous(ptr));
-                current.as_mut().predecessor = pred;
-                self.predecessor = pred;
+                let pred = Some(Preceding::Previous(ptr));
+                current.as_mut().preceding = pred;
+                self.preceding = pred;
             },
             (Some(mut current), None) => unsafe {
                 ptr::write(
                     ptr,
                     Node {
                         element: item,
-                        predecessor: None,
+                        preceding: None,
                         child: None,
                         next: Some(current),
                     },
                 );
                 let ptr = NonNull::new(ptr).unwrap_unchecked();
-                let pred = Some(Predecessor::Previous(ptr));
-                current.as_mut().predecessor = pred;
-                self.predecessor = pred;
+                let pred = Some(Preceding::Previous(ptr));
+                current.as_mut().preceding = pred;
+                self.preceding = pred;
                 self.tree.root = Some(ptr);
             },
             (None, Some(previous)) => unsafe {
@@ -509,17 +510,17 @@ impl<T> CursorMut<'_, T> {
                     ptr,
                     Node {
                         element: item,
-                        predecessor: Some(previous),
+                        preceding: Some(previous),
                         child: None,
                         next: None,
                     },
                 );
                 let ptr = NonNull::new(ptr).unwrap_unchecked();
                 match previous {
-                    Predecessor::Parent(mut parent) => {
+                    Preceding::Parent(mut parent) => {
                         parent.as_mut().child = Some(ptr);
                     }
-                    Predecessor::Previous(mut previous) => {
+                    Preceding::Previous(mut previous) => {
                         previous.as_mut().next = Some(ptr);
                     }
                 }
@@ -530,7 +531,7 @@ impl<T> CursorMut<'_, T> {
                     ptr,
                     Node {
                         element: item,
-                        predecessor: None,
+                        preceding: None,
                         child: None,
                         next: None,
                     },
@@ -547,30 +548,30 @@ impl<T> CursorMut<'_, T> {
     /// If the cursor has `None` current element it is set to the inserted element.
     pub fn insert_next(&mut self, item: T) {
         let ptr = unsafe { alloc::alloc(alloc::Layout::new::<Node<T>>()).cast::<Node<T>>() };
-        match (self.current, self.predecessor) {
+        match (self.current, self.preceding) {
             (Some(mut current), _) => unsafe {
                 ptr::write(
                     ptr,
                     Node {
                         element: item,
-                        predecessor: Some(Predecessor::Previous(current)),
+                        preceding: Some(Preceding::Previous(current)),
                         child: None,
                         next: current.as_ref().next,
                     },
                 );
                 let ptr = NonNull::new(ptr).unwrap_unchecked();
                 if let Some(mut next) = current.as_ref().next {
-                    next.as_mut().predecessor = Some(Predecessor::Previous(ptr));
+                    next.as_mut().preceding = Some(Preceding::Previous(ptr));
                 }
                 current.as_mut().next = Some(ptr);
             },
-            (None, Some(predecessor)) => match predecessor {
-                Predecessor::Parent(mut parent) => unsafe {
+            (None, Some(preceding)) => match preceding {
+                Preceding::Parent(mut parent) => unsafe {
                     ptr::write(
                         ptr,
                         Node {
                             element: item,
-                            predecessor: Some(Predecessor::Parent(parent)),
+                            preceding: Some(Preceding::Parent(parent)),
                             child: None,
                             next: None,
                         },
@@ -579,12 +580,12 @@ impl<T> CursorMut<'_, T> {
                     parent.as_mut().child = Some(ptr);
                     self.current = Some(ptr);
                 },
-                Predecessor::Previous(mut previous) => unsafe {
+                Preceding::Previous(mut previous) => unsafe {
                     ptr::write(
                         ptr,
                         Node {
                             element: item,
-                            predecessor: Some(Predecessor::Previous(previous)),
+                            preceding: Some(Preceding::Previous(previous)),
                             child: None,
                             next: None,
                         },
@@ -599,7 +600,7 @@ impl<T> CursorMut<'_, T> {
                     ptr,
                     Node {
                         element: item,
-                        predecessor: None,
+                        preceding: None,
                         child: None,
                         next: None,
                     },
@@ -616,30 +617,30 @@ impl<T> CursorMut<'_, T> {
     /// If the cursor has `None` current element it is set to the inserted element.
     pub fn insert_child(&mut self, item: T) {
         let ptr = unsafe { alloc::alloc(alloc::Layout::new::<Node<T>>()).cast::<Node<T>>() };
-        match (self.current, self.predecessor) {
+        match (self.current, self.preceding) {
             (Some(mut current), _) => unsafe {
                 ptr::write(
                     ptr,
                     Node {
                         element: item,
-                        predecessor: Some(Predecessor::Parent(current)),
+                        preceding: Some(Preceding::Parent(current)),
                         child: None,
                         next: current.as_ref().next,
                     },
                 );
                 let ptr = NonNull::new(ptr).unwrap_unchecked();
                 if let Some(mut child) = current.as_ref().child {
-                    child.as_mut().predecessor = Some(Predecessor::Previous(ptr));
+                    child.as_mut().preceding = Some(Preceding::Previous(ptr));
                 }
                 current.as_mut().child = Some(ptr);
             },
-            (None, Some(predecessor)) => match predecessor {
-                Predecessor::Parent(mut parent) => unsafe {
+            (None, Some(preceding)) => match preceding {
+                Preceding::Parent(mut parent) => unsafe {
                     ptr::write(
                         ptr,
                         Node {
                             element: item,
-                            predecessor: Some(Predecessor::Parent(parent)),
+                            preceding: Some(Preceding::Parent(parent)),
                             child: None,
                             next: None,
                         },
@@ -648,12 +649,12 @@ impl<T> CursorMut<'_, T> {
                     parent.as_mut().child = Some(ptr);
                     self.current = Some(ptr);
                 },
-                Predecessor::Previous(mut previous) => unsafe {
+                Preceding::Previous(mut previous) => unsafe {
                     ptr::write(
                         ptr,
                         Node {
                             element: item,
-                            predecessor: Some(Predecessor::Previous(previous)),
+                            preceding: Some(Preceding::Previous(previous)),
                             child: None,
                             next: None,
                         },
@@ -668,7 +669,7 @@ impl<T> CursorMut<'_, T> {
                     ptr,
                     Node {
                         element: item,
-                        predecessor: None,
+                        preceding: None,
                         child: None,
                         next: None,
                     },
@@ -684,19 +685,19 @@ impl<T> CursorMut<'_, T> {
     ///
     /// When removing a node with a child node, this child node is removed.
     pub fn remove_current(&mut self) {
-        match (self.current, self.predecessor) {
-            (Some(current), Some(predecessor)) => unsafe {
+        match (self.current, self.preceding) {
+            (Some(current), Some(preceding)) => unsafe {
                 self.current = current.as_ref().next;
-                match predecessor {
-                    Predecessor::Parent(mut parent) => {
+                match preceding {
+                    Preceding::Parent(mut parent) => {
                         parent.as_mut().child = current.as_ref().next;
                     }
-                    Predecessor::Previous(mut previous) => {
+                    Preceding::Previous(mut previous) => {
                         previous.as_mut().next = current.as_ref().next;
                     }
                 }
                 if let Some(mut next) = current.as_ref().next {
-                    next.as_mut().predecessor = Some(predecessor);
+                    next.as_mut().preceding = Some(preceding);
                 }
 
                 // Deallocate all child nodes of the old current node.
@@ -720,7 +721,7 @@ impl<T> CursorMut<'_, T> {
                 self.current = current.as_ref().next;
                 self.tree.root = current.as_ref().next;
                 if let Some(mut next) = current.as_ref().next {
-                    next.as_mut().predecessor = None;
+                    next.as_mut().preceding = None;
                 }
 
                 // Deallocate all child nodes of the old current node.
@@ -752,7 +753,7 @@ impl<T> CursorMut<'_, T> {
     #[allow(clippy::needless_pass_by_value)]
     pub fn splice_after(&mut self, tree: SyntaxTree<T>) {
         if let Some(mut tree_root) = tree.root {
-            match (self.current, self.predecessor) {
+            match (self.current, self.preceding) {
                 (Some(mut current), _) => unsafe {
                     if let Some(mut self_next) = current.as_ref().next {
                         // Finds the last element in `tree`.
@@ -761,28 +762,28 @@ impl<T> CursorMut<'_, T> {
                             tree_last = next;
                         }
                         tree_last.as_mut().next = Some(self_next);
-                        self_next.as_mut().predecessor = Some(Predecessor::Previous(tree_last));
-                        tree_root.as_mut().predecessor = Some(Predecessor::Previous(current));
+                        self_next.as_mut().preceding = Some(Preceding::Previous(tree_last));
+                        tree_root.as_mut().preceding = Some(Preceding::Previous(current));
                         current.as_mut().next = tree.root;
                     } else {
-                        tree_root.as_mut().predecessor = Some(Predecessor::Previous(current));
+                        tree_root.as_mut().preceding = Some(Preceding::Previous(current));
                         current.as_mut().next = tree.root;
                     }
                 },
-                (None, Some(predecessor)) => unsafe {
+                (None, Some(preceding)) => unsafe {
                     self.current = Some(tree_root);
-                    match predecessor {
-                        Predecessor::Parent(mut parent) => {
+                    match preceding {
+                        Preceding::Parent(mut parent) => {
                             parent.as_mut().child = Some(tree_root);
                         }
-                        Predecessor::Previous(mut previous) => {
+                        Preceding::Previous(mut previous) => {
                             previous.as_mut().next = Some(tree_root);
                         }
                     }
-                    tree_root.as_mut().predecessor = Some(predecessor);
+                    tree_root.as_mut().preceding = Some(preceding);
                 },
                 // It will never be the case that when a tree has a root a cursor's current and
-                // predecessor values are both `None`.
+                // preceding values are both `None`.
                 (None, None) => {
                     self.current = tree.root;
                     self.tree.root = tree.root;
@@ -799,7 +800,7 @@ impl<T> CursorMut<'_, T> {
     #[allow(clippy::needless_pass_by_value)]
     pub fn splice_before(&mut self, tree: SyntaxTree<T>) {
         if let Some(mut tree_root) = tree.root {
-            match (self.current, self.predecessor) {
+            match (self.current, self.preceding) {
                 (Some(mut current), Some(previous)) => unsafe {
                     // Finds the last element in `tree`.
                     let mut tree_last = tree_root;
@@ -807,14 +808,14 @@ impl<T> CursorMut<'_, T> {
                         tree_last = next;
                     }
                     tree_last.as_mut().next = Some(current);
-                    let pred = Some(Predecessor::Previous(tree_last));
-                    current.as_mut().predecessor = pred;
-                    self.predecessor = pred;
+                    let pred = Some(Preceding::Previous(tree_last));
+                    current.as_mut().preceding = pred;
+                    self.preceding = pred;
                     match previous {
-                        Predecessor::Parent(mut parent) => {
+                        Preceding::Parent(mut parent) => {
                             parent.as_mut().child = Some(tree_root);
                         }
-                        Predecessor::Previous(mut previous) => {
+                        Preceding::Previous(mut previous) => {
                             previous.as_mut().next = Some(tree_root);
                         }
                     }
@@ -826,22 +827,22 @@ impl<T> CursorMut<'_, T> {
                         tree_last = next;
                     }
                     tree_last.as_mut().next = Some(current);
-                    let pred = Some(Predecessor::Previous(tree_last));
-                    current.as_mut().predecessor = pred;
-                    self.predecessor = pred;
+                    let pred = Some(Preceding::Previous(tree_last));
+                    current.as_mut().preceding = pred;
+                    self.preceding = pred;
                     self.tree.root = Some(tree_root);
                 },
                 (None, Some(previous)) => unsafe {
                     self.current = Some(tree_root);
                     match previous {
-                        Predecessor::Parent(mut parent) => {
+                        Preceding::Parent(mut parent) => {
                             parent.as_mut().child = Some(tree_root);
                         }
-                        Predecessor::Previous(mut previous) => {
+                        Preceding::Previous(mut previous) => {
                             previous.as_mut().next = Some(tree_root);
                         }
                     }
-                    tree_root.as_mut().predecessor = Some(previous);
+                    tree_root.as_mut().preceding = Some(previous);
                 },
                 (None, None) => {
                     self.current = tree.root;
@@ -854,7 +855,7 @@ impl<T> CursorMut<'_, T> {
     /// Splits the list into two after the current element. This will return a new list consisting
     /// of everything after the cursor, with the original list retaining everything before.
     pub fn split_after(&mut self) -> SyntaxTree<T> {
-        match (self.current, self.predecessor) {
+        match (self.current, self.preceding) {
             (Some(mut current), _) => unsafe {
                 if let Some(next) = current.as_ref().next {
                     current.as_mut().next = None;
@@ -870,11 +871,11 @@ impl<T> CursorMut<'_, T> {
     /// Splits the list into two before the current element. This will return a new list consisting
     /// of everything before the cursor, with the original list retaining everything after.
     pub fn split_before(&mut self) -> SyntaxTree<T> {
-        match (self.current, self.predecessor) {
+        match (self.current, self.preceding) {
             (Some(mut current), Some(previous)) => unsafe {
                 previous.unwrap().as_mut().next = None;
-                self.predecessor = None;
-                current.as_mut().predecessor = None;
+                self.preceding = None;
+                current.as_mut().preceding = None;
 
                 let temp = SyntaxTree {
                     root: self.tree.root,
@@ -884,7 +885,7 @@ impl<T> CursorMut<'_, T> {
             },
             (None, Some(previous)) => unsafe {
                 previous.unwrap().as_mut().next = None;
-                self.predecessor = None;
+                self.preceding = None;
 
                 let temp = SyntaxTree {
                     root: self.tree.root,
@@ -936,14 +937,14 @@ impl<T> CursorMut<'_, T> {
 /// ```
 /// this is a simplified tree structure.
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
-pub enum Predecessor<T> {
+pub enum Preceding<T> {
     /// A parent element.
     Parent(T),
     /// A previous element.
     Previous(T),
 }
 #[allow(dead_code)]
-impl<T> Predecessor<T> {
+impl<T> Preceding<T> {
     /// Unwrap to a parent.
     pub fn parent(self) -> Option<T> {
         match self {
@@ -964,25 +965,25 @@ impl<T> Predecessor<T> {
             Self::Previous(x) | Self::Parent(x) => x,
         }
     }
-    /// Returns `Predecessor<&T>`.
-    pub fn as_ref(&self) -> Predecessor<&T> {
+    /// Returns `Preceding<&T>`.
+    pub fn as_ref(&self) -> Preceding<&T> {
         match self {
-            Self::Parent(x) => Predecessor::Parent(x),
-            Self::Previous(x) => Predecessor::Previous(x),
+            Self::Parent(x) => Preceding::Parent(x),
+            Self::Previous(x) => Preceding::Previous(x),
         }
     }
-    /// Returns `Predecessor<&mut T>`.
-    pub fn as_mut(&mut self) -> Predecessor<&mut T> {
+    /// Returns `Preceding<&mut T>`.
+    pub fn as_mut(&mut self) -> Preceding<&mut T> {
         match self {
-            Self::Parent(x) => Predecessor::Parent(x),
-            Self::Previous(x) => Predecessor::Previous(x),
+            Self::Parent(x) => Preceding::Parent(x),
+            Self::Previous(x) => Preceding::Previous(x),
         }
     }
-    /// Maps to `Predecessor<P>`.
-    pub fn map<P>(self, f: impl Fn(T) -> P) -> Predecessor<P> {
+    /// Maps to `Preceding<P>`.
+    pub fn map<P>(self, f: impl Fn(T) -> P) -> Preceding<P> {
         match self {
-            Self::Previous(x) => Predecessor::Previous(f(x)),
-            Self::Parent(x) => Predecessor::Parent(f(x)),
+            Self::Previous(x) => Preceding::Previous(f(x)),
+            Self::Parent(x) => Preceding::Parent(f(x)),
         }
     }
 }
@@ -990,7 +991,7 @@ impl<T> Predecessor<T> {
 #[derive(Debug)]
 struct Node<T> {
     element: T,
-    predecessor: Option<NodePredecessor<T>>,
+    preceding: Option<NodePredecessor<T>>,
     child: Option<NonNull<Node<T>>>,
     next: Option<NonNull<Node<T>>>,
 }
@@ -1003,91 +1004,91 @@ mod tests {
     fn display() {
         let mut tree = SyntaxTree::<u8>::default();
         let mut cursor = tree.cursor_mut();
-        assert_eq!(cursor.peek_predecessor(), None);
+        assert_eq!(cursor.peek_preceding(), None);
         assert_eq!(cursor.current(), None);
         assert_eq!(cursor.peek_next(), None);
         assert_eq!(cursor.peek_child(), None);
 
         cursor.insert_next(0);
-        assert_eq!(cursor.peek_predecessor(), None);
+        assert_eq!(cursor.peek_preceding(), None);
         assert_eq!(cursor.current(), Some(&0));
         assert_eq!(cursor.peek_next(), None);
         assert_eq!(cursor.peek_child(), None);
 
         cursor.insert_child(1);
-        assert_eq!(cursor.peek_predecessor(), None);
+        assert_eq!(cursor.peek_preceding(), None);
         assert_eq!(cursor.current(), Some(&0));
         assert_eq!(cursor.peek_next(), None);
         assert_eq!(cursor.peek_child(), Some(&1));
 
         cursor.move_child();
-        assert_eq!(cursor.peek_predecessor(), Some(Predecessor::Parent(&0)));
+        assert_eq!(cursor.peek_preceding(), Some(Preceding::Parent(&0)));
         assert_eq!(cursor.current(), Some(&1));
         assert_eq!(cursor.peek_next(), None);
         assert_eq!(cursor.peek_child(), None);
 
         cursor.insert_next(2);
-        assert_eq!(cursor.peek_predecessor(), Some(Predecessor::Parent(&0)));
+        assert_eq!(cursor.peek_preceding(), Some(Preceding::Parent(&0)));
         assert_eq!(cursor.current(), Some(&1));
         assert_eq!(cursor.peek_next(), Some(&2));
         assert_eq!(cursor.peek_child(), None);
 
         cursor.move_next();
-        assert_eq!(cursor.peek_predecessor(), Some(Predecessor::Previous(&1)));
+        assert_eq!(cursor.peek_preceding(), Some(Preceding::Previous(&1)));
         assert_eq!(cursor.current(), Some(&2));
         assert_eq!(cursor.peek_next(), None);
         assert_eq!(cursor.peek_child(), None);
 
         cursor.insert_child(3);
-        assert_eq!(cursor.peek_predecessor(), Some(Predecessor::Previous(&1)));
+        assert_eq!(cursor.peek_preceding(), Some(Preceding::Previous(&1)));
         assert_eq!(cursor.current(), Some(&2));
         assert_eq!(cursor.peek_next(), None);
         assert_eq!(cursor.peek_child(), Some(&3));
 
         cursor.move_parent();
-        assert_eq!(cursor.peek_predecessor(), None);
+        assert_eq!(cursor.peek_preceding(), None);
         assert_eq!(cursor.current(), Some(&0));
         assert_eq!(cursor.peek_next(), None);
         assert_eq!(cursor.peek_child(), Some(&1));
 
         cursor.insert_next(4);
-        assert_eq!(cursor.peek_predecessor(), None);
+        assert_eq!(cursor.peek_preceding(), None);
         assert_eq!(cursor.current(), Some(&0));
         assert_eq!(cursor.peek_next(), Some(&4));
         assert_eq!(cursor.peek_child(), Some(&1));
 
         cursor.move_next();
-        assert_eq!(cursor.peek_predecessor(), Some(Predecessor::Previous(&0)));
+        assert_eq!(cursor.peek_preceding(), Some(Preceding::Previous(&0)));
         assert_eq!(cursor.current(), Some(&4));
         assert_eq!(cursor.peek_next(), None);
         assert_eq!(cursor.peek_child(), None);
 
         cursor.insert_child(5);
-        assert_eq!(cursor.peek_predecessor(), Some(Predecessor::Previous(&0)));
+        assert_eq!(cursor.peek_preceding(), Some(Preceding::Previous(&0)));
         assert_eq!(cursor.current(), Some(&4));
         assert_eq!(cursor.peek_next(), None);
         assert_eq!(cursor.peek_child(), Some(&5));
 
         cursor.move_child();
-        assert_eq!(cursor.peek_predecessor(), Some(Predecessor::Parent(&4)));
+        assert_eq!(cursor.peek_preceding(), Some(Preceding::Parent(&4)));
         assert_eq!(cursor.current(), Some(&5));
         assert_eq!(cursor.peek_next(), None);
         assert_eq!(cursor.peek_child(), None);
 
         cursor.insert_next(6);
-        assert_eq!(cursor.peek_predecessor(), Some(Predecessor::Parent(&4)));
+        assert_eq!(cursor.peek_preceding(), Some(Preceding::Parent(&4)));
         assert_eq!(cursor.current(), Some(&5));
         assert_eq!(cursor.peek_next(), Some(&6));
         assert_eq!(cursor.peek_child(), None);
 
         cursor.move_next();
-        assert_eq!(cursor.peek_predecessor(), Some(Predecessor::Previous(&5)));
+        assert_eq!(cursor.peek_preceding(), Some(Preceding::Previous(&5)));
         assert_eq!(cursor.current(), Some(&6));
         assert_eq!(cursor.peek_next(), None);
         assert_eq!(cursor.peek_child(), None);
 
         cursor.insert_child(7);
-        assert_eq!(cursor.peek_predecessor(), Some(Predecessor::Previous(&5)));
+        assert_eq!(cursor.peek_preceding(), Some(Preceding::Previous(&5)));
         assert_eq!(cursor.current(), Some(&6));
         assert_eq!(cursor.peek_next(), None);
         assert_eq!(cursor.peek_child(), Some(&7));
@@ -1118,80 +1119,80 @@ mod tests {
     }
 
     #[test]
-    fn insert_predecessor() {
+    fn insert_preceding() {
         let mut tree = SyntaxTree::<u8>::default();
         let mut cursor = tree.cursor_mut();
-        assert_eq!(cursor.peek_predecessor(), None);
+        assert_eq!(cursor.peek_preceding(), None);
         assert_eq!(cursor.current(), None);
         assert_eq!(cursor.peek_next(), None);
 
-        cursor.insert_predecessor(1);
-        assert_eq!(cursor.peek_predecessor(), None);
+        cursor.insert_preceding(1);
+        assert_eq!(cursor.peek_preceding(), None);
         assert_eq!(cursor.current(), Some(&1));
         assert_eq!(cursor.peek_next(), None);
 
-        cursor.insert_predecessor(2);
-        assert_eq!(cursor.peek_predecessor(), Some(Predecessor::Previous(&2)));
+        cursor.insert_preceding(2);
+        assert_eq!(cursor.peek_preceding(), Some(Preceding::Previous(&2)));
         assert_eq!(cursor.current(), Some(&1));
         assert_eq!(cursor.peek_next(), None);
 
         cursor.move_next();
-        assert_eq!(cursor.peek_predecessor(), Some(Predecessor::Previous(&1)));
+        assert_eq!(cursor.peek_preceding(), Some(Preceding::Previous(&1)));
         assert_eq!(cursor.current(), None);
         assert_eq!(cursor.peek_next(), None);
 
         cursor.move_next();
-        assert_eq!(cursor.peek_predecessor(), Some(Predecessor::Previous(&1)));
+        assert_eq!(cursor.peek_preceding(), Some(Preceding::Previous(&1)));
         assert_eq!(cursor.current(), None);
         assert_eq!(cursor.peek_next(), None);
 
-        cursor.move_pred();
-        assert_eq!(cursor.peek_predecessor(), Some(Predecessor::Previous(&2)));
+        cursor.move_preceding();
+        assert_eq!(cursor.peek_preceding(), Some(Preceding::Previous(&2)));
         assert_eq!(cursor.current(), Some(&1));
         assert_eq!(cursor.peek_next(), None);
 
-        cursor.move_pred();
-        assert_eq!(cursor.peek_predecessor(), None);
+        cursor.move_preceding();
+        assert_eq!(cursor.peek_preceding(), None);
         assert_eq!(cursor.current(), Some(&2));
         assert_eq!(cursor.peek_next(), Some(&1));
 
-        cursor.insert_predecessor(3);
-        assert_eq!(cursor.peek_predecessor(), Some(Predecessor::Previous(&3)));
+        cursor.insert_preceding(3);
+        assert_eq!(cursor.peek_preceding(), Some(Preceding::Previous(&3)));
         assert_eq!(cursor.current(), Some(&2));
         assert_eq!(cursor.peek_next(), Some(&1));
 
         cursor.move_next();
-        assert_eq!(cursor.peek_predecessor(), Some(Predecessor::Previous(&2)));
+        assert_eq!(cursor.peek_preceding(), Some(Preceding::Previous(&2)));
         assert_eq!(cursor.current(), Some(&1));
         assert_eq!(cursor.peek_next(), None);
 
         cursor.move_next();
-        assert_eq!(cursor.peek_predecessor(), Some(Predecessor::Previous(&1)));
+        assert_eq!(cursor.peek_preceding(), Some(Preceding::Previous(&1)));
         assert_eq!(cursor.current(), None);
         assert_eq!(cursor.peek_next(), None);
 
         cursor.move_next();
-        assert_eq!(cursor.peek_predecessor(), Some(Predecessor::Previous(&1)));
+        assert_eq!(cursor.peek_preceding(), Some(Preceding::Previous(&1)));
         assert_eq!(cursor.current(), None);
         assert_eq!(cursor.peek_next(), None);
 
-        cursor.move_pred();
-        assert_eq!(cursor.peek_predecessor(), Some(Predecessor::Previous(&2)));
+        cursor.move_preceding();
+        assert_eq!(cursor.peek_preceding(), Some(Preceding::Previous(&2)));
         assert_eq!(cursor.current(), Some(&1));
         assert_eq!(cursor.peek_next(), None);
 
-        cursor.move_pred();
-        assert_eq!(cursor.peek_predecessor(), Some(Predecessor::Previous(&3)));
+        cursor.move_preceding();
+        assert_eq!(cursor.peek_preceding(), Some(Preceding::Previous(&3)));
         assert_eq!(cursor.current(), Some(&2));
         assert_eq!(cursor.peek_next(), Some(&1));
 
-        cursor.move_pred();
-        assert_eq!(cursor.peek_predecessor(), None);
+        cursor.move_preceding();
+        assert_eq!(cursor.peek_preceding(), None);
         assert_eq!(cursor.current(), Some(&3));
         assert_eq!(cursor.peek_next(), Some(&2));
 
-        cursor.move_pred();
-        assert_eq!(cursor.peek_predecessor(), None);
+        cursor.move_preceding();
+        assert_eq!(cursor.peek_preceding(), None);
         assert_eq!(cursor.current(), Some(&3));
         assert_eq!(cursor.peek_next(), Some(&2));
     }
@@ -1200,82 +1201,82 @@ mod tests {
     fn insert_next() {
         let mut tree = SyntaxTree::<u8>::default();
         let mut cursor = tree.cursor_mut();
-        assert_eq!(cursor.peek_predecessor(), None);
+        assert_eq!(cursor.peek_preceding(), None);
         assert_eq!(cursor.current(), None);
         assert_eq!(cursor.peek_next(), None);
 
         cursor.insert_next(1);
-        assert_eq!(cursor.peek_predecessor(), None);
+        assert_eq!(cursor.peek_preceding(), None);
         assert_eq!(cursor.current(), Some(&1));
         assert_eq!(cursor.peek_next(), None);
 
         cursor.insert_next(2);
-        assert_eq!(cursor.peek_predecessor(), None);
+        assert_eq!(cursor.peek_preceding(), None);
         assert_eq!(cursor.current(), Some(&1));
         assert_eq!(cursor.peek_next(), Some(&2));
 
         cursor.move_next();
-        assert_eq!(cursor.peek_predecessor(), Some(Predecessor::Previous(&1)));
+        assert_eq!(cursor.peek_preceding(), Some(Preceding::Previous(&1)));
         assert_eq!(cursor.current(), Some(&2));
         assert_eq!(cursor.peek_next(), None);
 
         cursor.move_next();
-        assert_eq!(cursor.peek_predecessor(), Some(Predecessor::Previous(&2)));
+        assert_eq!(cursor.peek_preceding(), Some(Preceding::Previous(&2)));
         assert_eq!(cursor.current(), None);
         assert_eq!(cursor.peek_next(), None);
 
-        cursor.move_pred();
-        assert_eq!(cursor.peek_predecessor(), Some(Predecessor::Previous(&1)));
+        cursor.move_preceding();
+        assert_eq!(cursor.peek_preceding(), Some(Preceding::Previous(&1)));
         assert_eq!(cursor.current(), Some(&2));
         assert_eq!(cursor.peek_next(), None);
 
-        cursor.move_pred();
-        assert_eq!(cursor.peek_predecessor(), None);
+        cursor.move_preceding();
+        assert_eq!(cursor.peek_preceding(), None);
         assert_eq!(cursor.current(), Some(&1));
         assert_eq!(cursor.peek_next(), Some(&2));
 
         cursor.insert_next(3);
-        assert_eq!(cursor.peek_predecessor(), None);
+        assert_eq!(cursor.peek_preceding(), None);
         assert_eq!(cursor.current(), Some(&1));
         assert_eq!(cursor.peek_next(), Some(&3));
 
         cursor.move_next();
-        assert_eq!(cursor.peek_predecessor(), Some(Predecessor::Previous(&1)));
+        assert_eq!(cursor.peek_preceding(), Some(Preceding::Previous(&1)));
         assert_eq!(cursor.current(), Some(&3));
         assert_eq!(cursor.peek_next(), Some(&2));
 
         cursor.move_next();
-        assert_eq!(cursor.peek_predecessor(), Some(Predecessor::Previous(&3)));
+        assert_eq!(cursor.peek_preceding(), Some(Preceding::Previous(&3)));
         assert_eq!(cursor.current(), Some(&2));
         assert_eq!(cursor.peek_next(), None);
 
         cursor.move_next();
-        assert_eq!(cursor.peek_predecessor(), Some(Predecessor::Previous(&2)));
+        assert_eq!(cursor.peek_preceding(), Some(Preceding::Previous(&2)));
         assert_eq!(cursor.current(), None);
         assert_eq!(cursor.peek_next(), None);
 
         cursor.move_next();
-        assert_eq!(cursor.peek_predecessor(), Some(Predecessor::Previous(&2)));
+        assert_eq!(cursor.peek_preceding(), Some(Preceding::Previous(&2)));
         assert_eq!(cursor.current(), None);
         assert_eq!(cursor.peek_next(), None);
 
-        cursor.move_pred();
-        assert_eq!(cursor.peek_predecessor(), Some(Predecessor::Previous(&3)));
+        cursor.move_preceding();
+        assert_eq!(cursor.peek_preceding(), Some(Preceding::Previous(&3)));
         assert_eq!(cursor.current(), Some(&2));
         assert_eq!(cursor.peek_next(), None);
 
-        cursor.move_pred();
-        assert_eq!(cursor.peek_predecessor(), Some(Predecessor::Previous(&1)));
+        cursor.move_preceding();
+        assert_eq!(cursor.peek_preceding(), Some(Preceding::Previous(&1)));
         assert_eq!(cursor.current(), Some(&3));
         assert_eq!(cursor.peek_next(), Some(&2));
 
-        cursor.move_pred();
-        assert_eq!(cursor.peek_predecessor(), None);
+        cursor.move_preceding();
+        assert_eq!(cursor.peek_preceding(), None);
         assert_eq!(cursor.current(), Some(&1));
         assert_eq!(cursor.peek_next(), Some(&3));
 
-        cursor.move_pred();
-        assert_eq!(cursor.peek_predecessor(), None);
+        cursor.move_preceding();
+        assert_eq!(cursor.peek_preceding(), None);
         assert_eq!(cursor.current(), Some(&1));
         assert_eq!(cursor.peek_next(), Some(&3));
     }
@@ -1284,52 +1285,52 @@ mod tests {
     fn remove() {
         let mut tree = SyntaxTree::<u8>::default();
         let mut cursor = tree.cursor_mut();
-        assert_eq!(cursor.peek_predecessor(), None);
+        assert_eq!(cursor.peek_preceding(), None);
         assert_eq!(cursor.current(), None);
         assert_eq!(cursor.peek_next(), None);
 
         cursor.insert_next(1);
-        assert_eq!(cursor.peek_predecessor(), None);
+        assert_eq!(cursor.peek_preceding(), None);
         assert_eq!(cursor.current(), Some(&1));
         assert_eq!(cursor.peek_next(), None);
 
         cursor.insert_next(2);
-        assert_eq!(cursor.peek_predecessor(), None);
+        assert_eq!(cursor.peek_preceding(), None);
         assert_eq!(cursor.current(), Some(&1));
         assert_eq!(cursor.peek_next(), Some(&2));
 
         cursor.insert_next(3);
-        assert_eq!(cursor.peek_predecessor(), None);
+        assert_eq!(cursor.peek_preceding(), None);
         assert_eq!(cursor.current(), Some(&1));
         assert_eq!(cursor.peek_next(), Some(&3));
 
         cursor.move_next();
-        assert_eq!(cursor.peek_predecessor(), Some(Predecessor::Previous(&1)));
+        assert_eq!(cursor.peek_preceding(), Some(Preceding::Previous(&1)));
         assert_eq!(cursor.current(), Some(&3));
         assert_eq!(cursor.peek_next(), Some(&2));
 
         cursor.move_next();
-        assert_eq!(cursor.peek_predecessor(), Some(Predecessor::Previous(&3)));
+        assert_eq!(cursor.peek_preceding(), Some(Preceding::Previous(&3)));
         assert_eq!(cursor.current(), Some(&2));
         assert_eq!(cursor.peek_next(), None);
 
-        cursor.move_pred();
-        assert_eq!(cursor.peek_predecessor(), Some(Predecessor::Previous(&1)));
+        cursor.move_preceding();
+        assert_eq!(cursor.peek_preceding(), Some(Preceding::Previous(&1)));
         assert_eq!(cursor.current(), Some(&3));
         assert_eq!(cursor.peek_next(), Some(&2));
 
-        cursor.move_pred();
-        assert_eq!(cursor.peek_predecessor(), None);
+        cursor.move_preceding();
+        assert_eq!(cursor.peek_preceding(), None);
         assert_eq!(cursor.current(), Some(&1));
         assert_eq!(cursor.peek_next(), Some(&3));
 
         cursor.remove_current();
-        assert_eq!(cursor.peek_predecessor(), None);
+        assert_eq!(cursor.peek_preceding(), None);
         assert_eq!(cursor.current(), Some(&3));
         assert_eq!(cursor.peek_next(), Some(&2));
 
         cursor.remove_current();
-        assert_eq!(cursor.peek_predecessor(), None);
+        assert_eq!(cursor.peek_preceding(), None);
         assert_eq!(cursor.current(), Some(&2));
         assert_eq!(cursor.peek_next(), None);
     }
@@ -1339,9 +1340,9 @@ mod tests {
         let mut tree = SyntaxTree::<u8>::default();
         let mut cursor = tree.cursor_mut();
         cursor.insert_next(1);
-        cursor.insert_predecessor(2);
+        cursor.insert_preceding(2);
         cursor.insert_next(3);
-        cursor.insert_predecessor(4);
+        cursor.insert_preceding(4);
         cursor.insert_next(5);
 
         let tree_clone = tree.clone();
@@ -1363,7 +1364,7 @@ mod tests {
         assert_eq!(iter.next(), None);
         assert_eq!(tree.len(), 1);
 
-        tree.cursor_mut().insert_predecessor(2);
+        tree.cursor_mut().insert_preceding(2);
         let mut iter = tree.iter();
         assert_eq!(iter.next(), Some(Element { item: &2, depth: 0 }));
         assert_eq!(iter.next(), Some(Element { item: &1, depth: 0 }));
@@ -1380,7 +1381,7 @@ mod tests {
         assert_eq!(iter.next(), None);
         assert_eq!(tree.len(), 3);
 
-        tree.cursor_mut().insert_predecessor(4);
+        tree.cursor_mut().insert_preceding(4);
         let mut iter = tree.iter();
         assert_eq!(iter.next(), Some(Element { item: &4, depth: 0 }));
         assert_eq!(iter.next(), Some(Element { item: &2, depth: 0 }));
@@ -1497,72 +1498,72 @@ mod tests {
     fn move_parent() {
         let mut tree_one = SyntaxTree::<u8>::default();
         let mut cursor = tree_one.cursor_mut();
-        assert_eq!(cursor.peek_predecessor(), None);
+        assert_eq!(cursor.peek_preceding(), None);
         assert_eq!(cursor.current(), None);
         assert_eq!(cursor.peek_next(), None);
 
         cursor.insert_next(1);
-        assert_eq!(cursor.peek_predecessor(), None);
+        assert_eq!(cursor.peek_preceding(), None);
         assert_eq!(cursor.current(), Some(&1));
         assert_eq!(cursor.peek_next(), None);
 
         cursor.insert_next(2);
-        assert_eq!(cursor.peek_predecessor(), None);
+        assert_eq!(cursor.peek_preceding(), None);
         assert_eq!(cursor.current(), Some(&1));
         assert_eq!(cursor.peek_next(), Some(&2));
 
         cursor.move_next();
-        assert_eq!(cursor.peek_predecessor(), Some(Predecessor::Previous(&1)));
+        assert_eq!(cursor.peek_preceding(), Some(Preceding::Previous(&1)));
         assert_eq!(cursor.current(), Some(&2));
         assert_eq!(cursor.peek_next(), None);
 
         cursor.insert_next(3);
-        assert_eq!(cursor.peek_predecessor(), Some(Predecessor::Previous(&1)));
+        assert_eq!(cursor.peek_preceding(), Some(Preceding::Previous(&1)));
         assert_eq!(cursor.current(), Some(&2));
         assert_eq!(cursor.peek_next(), Some(&3));
 
         cursor.move_next();
-        assert_eq!(cursor.peek_predecessor(), Some(Predecessor::Previous(&2)));
+        assert_eq!(cursor.peek_preceding(), Some(Preceding::Previous(&2)));
         assert_eq!(cursor.current(), Some(&3));
         assert_eq!(cursor.peek_next(), None);
 
         cursor.move_child();
-        assert_eq!(cursor.peek_predecessor(), Some(Predecessor::Parent(&3)));
+        assert_eq!(cursor.peek_preceding(), Some(Preceding::Parent(&3)));
         assert_eq!(cursor.current(), None);
         assert_eq!(cursor.peek_next(), None);
 
         cursor.insert_next(4);
-        assert_eq!(cursor.peek_predecessor(), Some(Predecessor::Parent(&3)));
+        assert_eq!(cursor.peek_preceding(), Some(Preceding::Parent(&3)));
         assert_eq!(cursor.current(), Some(&4));
         assert_eq!(cursor.peek_next(), None);
 
         cursor.move_next();
-        assert_eq!(cursor.peek_predecessor(), Some(Predecessor::Previous(&4)));
+        assert_eq!(cursor.peek_preceding(), Some(Preceding::Previous(&4)));
         assert_eq!(cursor.current(), None);
         assert_eq!(cursor.peek_next(), None);
 
         cursor.insert_next(5);
-        assert_eq!(cursor.peek_predecessor(), Some(Predecessor::Previous(&4)));
+        assert_eq!(cursor.peek_preceding(), Some(Preceding::Previous(&4)));
         assert_eq!(cursor.current(), Some(&5));
         assert_eq!(cursor.peek_next(), None);
 
         cursor.move_next();
-        assert_eq!(cursor.peek_predecessor(), Some(Predecessor::Previous(&5)));
+        assert_eq!(cursor.peek_preceding(), Some(Preceding::Previous(&5)));
         assert_eq!(cursor.current(), None);
         assert_eq!(cursor.peek_next(), None);
 
         cursor.insert_next(6);
-        assert_eq!(cursor.peek_predecessor(), Some(Predecessor::Previous(&5)));
+        assert_eq!(cursor.peek_preceding(), Some(Preceding::Previous(&5)));
         assert_eq!(cursor.current(), Some(&6));
         assert_eq!(cursor.peek_next(), None);
 
         cursor.move_parent();
-        assert_eq!(cursor.peek_predecessor(), Some(Predecessor::Previous(&2)));
+        assert_eq!(cursor.peek_preceding(), Some(Preceding::Previous(&2)));
         assert_eq!(cursor.current(), Some(&3));
         assert_eq!(cursor.peek_next(), None);
 
         cursor.move_parent();
-        assert_eq!(cursor.peek_predecessor(), None);
+        assert_eq!(cursor.peek_preceding(), None);
         assert_eq!(cursor.current(), Some(&1));
         assert_eq!(cursor.peek_next(), Some(&2));
     }
