@@ -282,6 +282,15 @@ pub struct Cursor<'a, T> {
     current: Option<NonNull<Node<T>>>,
     tree: &'a SyntaxTree<T>,
 }
+impl<'a, T> Clone for Cursor<'a, T> {
+    fn clone(&self) -> Self {
+        Self {
+            predecessor: self.predecessor,
+            current: self.current,
+            tree: self.tree,
+        }
+    }
+}
 impl<T: std::fmt::Debug> Cursor<'_, T> {
     /// Provides a reference to the root element.
     #[must_use]
@@ -323,22 +332,23 @@ impl<T: std::fmt::Debug> Cursor<'_, T> {
         }
     }
 
-    /// Moves the cursor through predecessor elements until reaching a parent or the first element.
-    pub fn move_parent(&mut self) {
-        if self.current.is_some() {
-            loop {
-                match self.predecessor {
-                    Some(Predecessor::Previous(previous)) => {
-                        self.current = Some(previous);
-                        self.predecessor = unsafe { previous.as_ref().predecessor };
-                    }
-                    Some(Predecessor::Parent(parent)) => {
-                        self.current = Some(parent);
-                        self.predecessor = unsafe { parent.as_ref().predecessor };
-                        break;
-                    }
-                    None => break,
+    /// Moves the cursor through predecessor elements until reaching a parent or
+    /// the root element.
+    ///
+    /// Returns `true` if it found a parent, or `false` if it did not.
+    pub fn move_parent(&mut self) -> bool {
+        loop {
+            match self.predecessor {
+                Some(Predecessor::Previous(previous)) => {
+                    self.current = Some(previous);
+                    self.predecessor = unsafe { previous.as_ref().predecessor };
                 }
+                Some(Predecessor::Parent(parent)) => {
+                    self.current = Some(parent);
+                    self.predecessor = unsafe { parent.as_ref().predecessor };
+                    break true;
+                }
+                None => break false,
             }
         }
     }
