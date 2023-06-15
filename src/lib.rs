@@ -945,6 +945,20 @@ pub enum Preceding<T> {
 }
 #[allow(dead_code)]
 impl<T> Preceding<T> {
+    /// Returns if self is a parent.
+    pub fn is_parent(&self) -> bool {
+        match self {
+            Self::Parent(_) => true,
+            Self::Previous(_) => false,
+        }
+    }
+    /// Returns if self is a previous.
+    pub fn is_previous(&self) -> bool {
+        match self {
+            Self::Parent(_) => false,
+            Self::Previous(_) => true,
+        }
+    }
     /// Unwrap to a parent.
     pub fn parent(self) -> Option<T> {
         match self {
