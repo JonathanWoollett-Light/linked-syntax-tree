@@ -64,12 +64,12 @@ pub struct SyntaxTree<T> {
     root: Option<NonNull<Node<T>>>,
 }
 
-const INDENT: &str = "    ";
+/// The string used for depth in the [`SyntaxTree`] [`std::fmt::Display`] implementation.
+pub const INDENT: &str = "    ";
 
 impl<T: fmt::Display> fmt::Display for SyntaxTree<T> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        let mut iter = self.iter();
-        while let Some(Element { item, depth }) = iter.next() {
+        for Element { item, depth } in self.iter() {
             writeln!(f, "{}{item}", INDENT.repeat(depth))?;
         }
         Ok(())
@@ -353,11 +353,28 @@ impl<T: std::fmt::Debug> Cursor<'_, T> {
         }
     }
 
+    /// Returns a reference to the parent element.
+    ///
+    /// Wrapper around `self.peek_predecessor().and_then(Predecessor::parent)`.
+    #[must_use]
+    pub fn peek_parent(&self) -> Option<&T> {
+        self.peek_predecessor().and_then(Predecessor::parent)
+    }
+
+    /// Returns a reference to the previous element.
+    ///
+    /// Wrapper around `self.peek_predecessor().and_then(Predecessor::previous)`
+    /// .
+    #[must_use]
+    pub fn peek_previous(&self) -> Option<&T> {
+        self.peek_predecessor().and_then(Predecessor::previous)
+    }
+
     /// Returns a reference to the predecessor element.
     #[must_use]
-    pub fn peek_pred(&self) -> Option<&T> {
+    pub fn peek_predecessor(&self) -> Option<Predecessor<&T>> {
         self.predecessor
-            .map(|p| unsafe { &p.unwrap().as_ref().element })
+            .map(|p| unsafe { p.map(|p| &p.as_ref().element) })
     }
 
     /// Returns a reference to the child element.
@@ -884,40 +901,54 @@ impl<T> CursorMut<'_, T> {
 ///                          └─────────┘
 /// ```
 /// this is a simplified tree structure.
-#[derive(Debug, Clone, Copy)]
-enum Predecessor<T> {
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+pub enum Predecessor<T> {
+    /// A parent element.
     Parent(T),
+    /// A previous element.
     Previous(T),
 }
 #[allow(dead_code)]
 impl<T> Predecessor<T> {
-    fn parent(self) -> Option<T> {
+    /// Unwrap to a parent.
+    pub fn parent(self) -> Option<T> {
         match self {
             Self::Parent(x) => Some(x),
             Self::Previous(_) => None,
         }
     }
-    fn previous(self) -> Option<T> {
+    /// Unwraps to a previous.
+    pub fn previous(self) -> Option<T> {
         match self {
             Self::Parent(_) => None,
             Self::Previous(x) => Some(x),
         }
     }
-    fn unwrap(self) -> T {
+    /// Unwraps.
+    pub fn unwrap(self) -> T {
         match self {
             Self::Previous(x) | Self::Parent(x) => x,
         }
     }
-    fn as_ref(&self) -> Predecessor<&T> {
+    /// Returns `Predecessor<&T>`.
+    pub fn as_ref(&self) -> Predecessor<&T> {
         match self {
             Self::Parent(x) => Predecessor::Parent(x),
             Self::Previous(x) => Predecessor::Previous(x),
         }
     }
-    fn as_mut(&mut self) -> Predecessor<&mut T> {
+    /// Returns `Predecessor<&mut T>`.
+    pub fn as_mut(&mut self) -> Predecessor<&mut T> {
         match self {
             Self::Parent(x) => Predecessor::Parent(x),
             Self::Previous(x) => Predecessor::Previous(x),
+        }
+    }
+    /// Maps to `Predecessor<P>`.
+    pub fn map<P>(self, f: impl Fn(T) -> P) -> Predecessor<P> {
+        match self {
+            Self::Previous(x) => Predecessor::Previous(f(x)),
+            Self::Parent(x) => Predecessor::Parent(f(x)),
         }
     }
 }
@@ -938,91 +969,91 @@ mod tests {
     fn display() {
         let mut tree = SyntaxTree::<u8>::default();
         let mut cursor = tree.cursor_mut();
-        assert_eq!(cursor.peek_pred(), None);
+        assert_eq!(cursor.peek_predecessor(), None);
         assert_eq!(cursor.current(), None);
         assert_eq!(cursor.peek_next(), None);
         assert_eq!(cursor.peek_child(), None);
 
         cursor.insert_next(0);
-        assert_eq!(cursor.peek_pred(), None);
+        assert_eq!(cursor.peek_predecessor(), None);
         assert_eq!(cursor.current(), Some(&0));
         assert_eq!(cursor.peek_next(), None);
         assert_eq!(cursor.peek_child(), None);
 
         cursor.insert_child(1);
-        assert_eq!(cursor.peek_pred(), None);
+        assert_eq!(cursor.peek_predecessor(), None);
         assert_eq!(cursor.current(), Some(&0));
         assert_eq!(cursor.peek_next(), None);
         assert_eq!(cursor.peek_child(), Some(&1));
 
         cursor.move_child();
-        assert_eq!(cursor.peek_pred(), Some(&0));
+        assert_eq!(cursor.peek_predecessor(), Some(Predecessor::Parent(&0)));
         assert_eq!(cursor.current(), Some(&1));
         assert_eq!(cursor.peek_next(), None);
         assert_eq!(cursor.peek_child(), None);
 
         cursor.insert_next(2);
-        assert_eq!(cursor.peek_pred(), Some(&0));
+        assert_eq!(cursor.peek_predecessor(), Some(Predecessor::Parent(&0)));
         assert_eq!(cursor.current(), Some(&1));
         assert_eq!(cursor.peek_next(), Some(&2));
         assert_eq!(cursor.peek_child(), None);
 
         cursor.move_next();
-        assert_eq!(cursor.peek_pred(), Some(&1));
+        assert_eq!(cursor.peek_predecessor(), Some(Predecessor::Previous(&1)));
         assert_eq!(cursor.current(), Some(&2));
         assert_eq!(cursor.peek_next(), None);
         assert_eq!(cursor.peek_child(), None);
 
         cursor.insert_child(3);
-        assert_eq!(cursor.peek_pred(), Some(&1));
+        assert_eq!(cursor.peek_predecessor(), Some(Predecessor::Previous(&1)));
         assert_eq!(cursor.current(), Some(&2));
         assert_eq!(cursor.peek_next(), None);
         assert_eq!(cursor.peek_child(), Some(&3));
 
         cursor.move_parent();
-        assert_eq!(cursor.peek_pred(), None);
+        assert_eq!(cursor.peek_predecessor(), None);
         assert_eq!(cursor.current(), Some(&0));
         assert_eq!(cursor.peek_next(), None);
         assert_eq!(cursor.peek_child(), Some(&1));
 
         cursor.insert_next(4);
-        assert_eq!(cursor.peek_pred(), None);
+        assert_eq!(cursor.peek_predecessor(), None);
         assert_eq!(cursor.current(), Some(&0));
         assert_eq!(cursor.peek_next(), Some(&4));
         assert_eq!(cursor.peek_child(), Some(&1));
 
         cursor.move_next();
-        assert_eq!(cursor.peek_pred(), Some(&0));
+        assert_eq!(cursor.peek_predecessor(), Some(Predecessor::Previous(&0)));
         assert_eq!(cursor.current(), Some(&4));
         assert_eq!(cursor.peek_next(), None);
         assert_eq!(cursor.peek_child(), None);
 
         cursor.insert_child(5);
-        assert_eq!(cursor.peek_pred(), Some(&0));
+        assert_eq!(cursor.peek_predecessor(), Some(Predecessor::Previous(&0)));
         assert_eq!(cursor.current(), Some(&4));
         assert_eq!(cursor.peek_next(), None);
         assert_eq!(cursor.peek_child(), Some(&5));
 
         cursor.move_child();
-        assert_eq!(cursor.peek_pred(), Some(&4));
+        assert_eq!(cursor.peek_predecessor(), Some(Predecessor::Parent(&4)));
         assert_eq!(cursor.current(), Some(&5));
         assert_eq!(cursor.peek_next(), None);
         assert_eq!(cursor.peek_child(), None);
 
         cursor.insert_next(6);
-        assert_eq!(cursor.peek_pred(), Some(&4));
+        assert_eq!(cursor.peek_predecessor(), Some(Predecessor::Parent(&4)));
         assert_eq!(cursor.current(), Some(&5));
         assert_eq!(cursor.peek_next(), Some(&6));
         assert_eq!(cursor.peek_child(), None);
 
         cursor.move_next();
-        assert_eq!(cursor.peek_pred(), Some(&5));
+        assert_eq!(cursor.peek_predecessor(), Some(Predecessor::Previous(&5)));
         assert_eq!(cursor.current(), Some(&6));
         assert_eq!(cursor.peek_next(), None);
         assert_eq!(cursor.peek_child(), None);
 
         cursor.insert_child(7);
-        assert_eq!(cursor.peek_pred(), Some(&5));
+        assert_eq!(cursor.peek_predecessor(), Some(Predecessor::Previous(&5)));
         assert_eq!(cursor.current(), Some(&6));
         assert_eq!(cursor.peek_next(), None);
         assert_eq!(cursor.peek_child(), Some(&7));
@@ -1056,77 +1087,77 @@ mod tests {
     fn insert_predecessor() {
         let mut tree = SyntaxTree::<u8>::default();
         let mut cursor = tree.cursor_mut();
-        assert_eq!(cursor.peek_pred(), None);
+        assert_eq!(cursor.peek_predecessor(), None);
         assert_eq!(cursor.current(), None);
         assert_eq!(cursor.peek_next(), None);
 
         cursor.insert_predecessor(1);
-        assert_eq!(cursor.peek_pred(), None);
+        assert_eq!(cursor.peek_predecessor(), None);
         assert_eq!(cursor.current(), Some(&1));
         assert_eq!(cursor.peek_next(), None);
 
         cursor.insert_predecessor(2);
-        assert_eq!(cursor.peek_pred(), Some(&2));
+        assert_eq!(cursor.peek_predecessor(), Some(Predecessor::Previous(&2)));
         assert_eq!(cursor.current(), Some(&1));
         assert_eq!(cursor.peek_next(), None);
 
         cursor.move_next();
-        assert_eq!(cursor.peek_pred(), Some(&1));
+        assert_eq!(cursor.peek_predecessor(), Some(Predecessor::Previous(&1)));
         assert_eq!(cursor.current(), None);
         assert_eq!(cursor.peek_next(), None);
 
         cursor.move_next();
-        assert_eq!(cursor.peek_pred(), Some(&1));
+        assert_eq!(cursor.peek_predecessor(), Some(Predecessor::Previous(&1)));
         assert_eq!(cursor.current(), None);
         assert_eq!(cursor.peek_next(), None);
 
         cursor.move_pred();
-        assert_eq!(cursor.peek_pred(), Some(&2));
+        assert_eq!(cursor.peek_predecessor(), Some(Predecessor::Previous(&2)));
         assert_eq!(cursor.current(), Some(&1));
         assert_eq!(cursor.peek_next(), None);
 
         cursor.move_pred();
-        assert_eq!(cursor.peek_pred(), None);
+        assert_eq!(cursor.peek_predecessor(), None);
         assert_eq!(cursor.current(), Some(&2));
         assert_eq!(cursor.peek_next(), Some(&1));
 
         cursor.insert_predecessor(3);
-        assert_eq!(cursor.peek_pred(), Some(&3));
+        assert_eq!(cursor.peek_predecessor(), Some(Predecessor::Previous(&3)));
         assert_eq!(cursor.current(), Some(&2));
         assert_eq!(cursor.peek_next(), Some(&1));
 
         cursor.move_next();
-        assert_eq!(cursor.peek_pred(), Some(&2));
+        assert_eq!(cursor.peek_predecessor(), Some(Predecessor::Previous(&2)));
         assert_eq!(cursor.current(), Some(&1));
         assert_eq!(cursor.peek_next(), None);
 
         cursor.move_next();
-        assert_eq!(cursor.peek_pred(), Some(&1));
+        assert_eq!(cursor.peek_predecessor(), Some(Predecessor::Previous(&1)));
         assert_eq!(cursor.current(), None);
         assert_eq!(cursor.peek_next(), None);
 
         cursor.move_next();
-        assert_eq!(cursor.peek_pred(), Some(&1));
+        assert_eq!(cursor.peek_predecessor(), Some(Predecessor::Previous(&1)));
         assert_eq!(cursor.current(), None);
         assert_eq!(cursor.peek_next(), None);
 
         cursor.move_pred();
-        assert_eq!(cursor.peek_pred(), Some(&2));
+        assert_eq!(cursor.peek_predecessor(), Some(Predecessor::Previous(&2)));
         assert_eq!(cursor.current(), Some(&1));
         assert_eq!(cursor.peek_next(), None);
 
         cursor.move_pred();
-        assert_eq!(cursor.peek_pred(), Some(&3));
+        assert_eq!(cursor.peek_predecessor(), Some(Predecessor::Previous(&3)));
         assert_eq!(cursor.current(), Some(&2));
         assert_eq!(cursor.peek_next(), Some(&1));
 
         cursor.move_pred();
-        assert_eq!(cursor.peek_pred(), None);
+        assert_eq!(cursor.peek_predecessor(), None);
         assert_eq!(cursor.current(), Some(&3));
         assert_eq!(cursor.peek_next(), Some(&2));
 
         cursor.move_pred();
-        assert_eq!(cursor.peek_pred(), None);
+        assert_eq!(cursor.peek_predecessor(), None);
         assert_eq!(cursor.current(), Some(&3));
         assert_eq!(cursor.peek_next(), Some(&2));
     }
@@ -1135,82 +1166,82 @@ mod tests {
     fn insert_next() {
         let mut tree = SyntaxTree::<u8>::default();
         let mut cursor = tree.cursor_mut();
-        assert_eq!(cursor.peek_pred(), None);
+        assert_eq!(cursor.peek_predecessor(), None);
         assert_eq!(cursor.current(), None);
         assert_eq!(cursor.peek_next(), None);
 
         cursor.insert_next(1);
-        assert_eq!(cursor.peek_pred(), None);
+        assert_eq!(cursor.peek_predecessor(), None);
         assert_eq!(cursor.current(), Some(&1));
         assert_eq!(cursor.peek_next(), None);
 
         cursor.insert_next(2);
-        assert_eq!(cursor.peek_pred(), None);
+        assert_eq!(cursor.peek_predecessor(), None);
         assert_eq!(cursor.current(), Some(&1));
         assert_eq!(cursor.peek_next(), Some(&2));
 
         cursor.move_next();
-        assert_eq!(cursor.peek_pred(), Some(&1));
+        assert_eq!(cursor.peek_predecessor(), Some(Predecessor::Previous(&1)));
         assert_eq!(cursor.current(), Some(&2));
         assert_eq!(cursor.peek_next(), None);
 
         cursor.move_next();
-        assert_eq!(cursor.peek_pred(), Some(&2));
+        assert_eq!(cursor.peek_predecessor(), Some(Predecessor::Previous(&2)));
         assert_eq!(cursor.current(), None);
         assert_eq!(cursor.peek_next(), None);
 
         cursor.move_pred();
-        assert_eq!(cursor.peek_pred(), Some(&1));
+        assert_eq!(cursor.peek_predecessor(), Some(Predecessor::Previous(&1)));
         assert_eq!(cursor.current(), Some(&2));
         assert_eq!(cursor.peek_next(), None);
 
         cursor.move_pred();
-        assert_eq!(cursor.peek_pred(), None);
+        assert_eq!(cursor.peek_predecessor(), None);
         assert_eq!(cursor.current(), Some(&1));
         assert_eq!(cursor.peek_next(), Some(&2));
 
         cursor.insert_next(3);
-        assert_eq!(cursor.peek_pred(), None);
+        assert_eq!(cursor.peek_predecessor(), None);
         assert_eq!(cursor.current(), Some(&1));
         assert_eq!(cursor.peek_next(), Some(&3));
 
         cursor.move_next();
-        assert_eq!(cursor.peek_pred(), Some(&1));
+        assert_eq!(cursor.peek_predecessor(), Some(Predecessor::Previous(&1)));
         assert_eq!(cursor.current(), Some(&3));
         assert_eq!(cursor.peek_next(), Some(&2));
 
         cursor.move_next();
-        assert_eq!(cursor.peek_pred(), Some(&3));
+        assert_eq!(cursor.peek_predecessor(), Some(Predecessor::Previous(&3)));
         assert_eq!(cursor.current(), Some(&2));
         assert_eq!(cursor.peek_next(), None);
 
         cursor.move_next();
-        assert_eq!(cursor.peek_pred(), Some(&2));
+        assert_eq!(cursor.peek_predecessor(), Some(Predecessor::Previous(&2)));
         assert_eq!(cursor.current(), None);
         assert_eq!(cursor.peek_next(), None);
 
         cursor.move_next();
-        assert_eq!(cursor.peek_pred(), Some(&2));
+        assert_eq!(cursor.peek_predecessor(), Some(Predecessor::Previous(&2)));
         assert_eq!(cursor.current(), None);
         assert_eq!(cursor.peek_next(), None);
 
         cursor.move_pred();
-        assert_eq!(cursor.peek_pred(), Some(&3));
+        assert_eq!(cursor.peek_predecessor(), Some(Predecessor::Previous(&3)));
         assert_eq!(cursor.current(), Some(&2));
         assert_eq!(cursor.peek_next(), None);
 
         cursor.move_pred();
-        assert_eq!(cursor.peek_pred(), Some(&1));
+        assert_eq!(cursor.peek_predecessor(), Some(Predecessor::Previous(&1)));
         assert_eq!(cursor.current(), Some(&3));
         assert_eq!(cursor.peek_next(), Some(&2));
 
         cursor.move_pred();
-        assert_eq!(cursor.peek_pred(), None);
+        assert_eq!(cursor.peek_predecessor(), None);
         assert_eq!(cursor.current(), Some(&1));
         assert_eq!(cursor.peek_next(), Some(&3));
 
         cursor.move_pred();
-        assert_eq!(cursor.peek_pred(), None);
+        assert_eq!(cursor.peek_predecessor(), None);
         assert_eq!(cursor.current(), Some(&1));
         assert_eq!(cursor.peek_next(), Some(&3));
     }
@@ -1219,52 +1250,52 @@ mod tests {
     fn remove() {
         let mut tree = SyntaxTree::<u8>::default();
         let mut cursor = tree.cursor_mut();
-        assert_eq!(cursor.peek_pred(), None);
+        assert_eq!(cursor.peek_predecessor(), None);
         assert_eq!(cursor.current(), None);
         assert_eq!(cursor.peek_next(), None);
 
         cursor.insert_next(1);
-        assert_eq!(cursor.peek_pred(), None);
+        assert_eq!(cursor.peek_predecessor(), None);
         assert_eq!(cursor.current(), Some(&1));
         assert_eq!(cursor.peek_next(), None);
 
         cursor.insert_next(2);
-        assert_eq!(cursor.peek_pred(), None);
+        assert_eq!(cursor.peek_predecessor(), None);
         assert_eq!(cursor.current(), Some(&1));
         assert_eq!(cursor.peek_next(), Some(&2));
 
         cursor.insert_next(3);
-        assert_eq!(cursor.peek_pred(), None);
+        assert_eq!(cursor.peek_predecessor(), None);
         assert_eq!(cursor.current(), Some(&1));
         assert_eq!(cursor.peek_next(), Some(&3));
 
         cursor.move_next();
-        assert_eq!(cursor.peek_pred(), Some(&1));
+        assert_eq!(cursor.peek_predecessor(), Some(Predecessor::Previous(&1)));
         assert_eq!(cursor.current(), Some(&3));
         assert_eq!(cursor.peek_next(), Some(&2));
 
         cursor.move_next();
-        assert_eq!(cursor.peek_pred(), Some(&3));
+        assert_eq!(cursor.peek_predecessor(), Some(Predecessor::Previous(&3)));
         assert_eq!(cursor.current(), Some(&2));
         assert_eq!(cursor.peek_next(), None);
 
         cursor.move_pred();
-        assert_eq!(cursor.peek_pred(), Some(&1));
+        assert_eq!(cursor.peek_predecessor(), Some(Predecessor::Previous(&1)));
         assert_eq!(cursor.current(), Some(&3));
         assert_eq!(cursor.peek_next(), Some(&2));
 
         cursor.move_pred();
-        assert_eq!(cursor.peek_pred(), None);
+        assert_eq!(cursor.peek_predecessor(), None);
         assert_eq!(cursor.current(), Some(&1));
         assert_eq!(cursor.peek_next(), Some(&3));
 
         cursor.remove_current();
-        assert_eq!(cursor.peek_pred(), None);
+        assert_eq!(cursor.peek_predecessor(), None);
         assert_eq!(cursor.current(), Some(&3));
         assert_eq!(cursor.peek_next(), Some(&2));
 
         cursor.remove_current();
-        assert_eq!(cursor.peek_pred(), None);
+        assert_eq!(cursor.peek_predecessor(), None);
         assert_eq!(cursor.current(), Some(&2));
         assert_eq!(cursor.peek_next(), None);
     }
@@ -1432,65 +1463,72 @@ mod tests {
     fn move_parent() {
         let mut tree_one = SyntaxTree::<u8>::default();
         let mut cursor = tree_one.cursor_mut();
-        assert_eq!(cursor.peek_pred(), None);
+        assert_eq!(cursor.peek_predecessor(), None);
         assert_eq!(cursor.current(), None);
         assert_eq!(cursor.peek_next(), None);
 
         cursor.insert_next(1);
-        assert_eq!(cursor.peek_pred(), None);
+        assert_eq!(cursor.peek_predecessor(), None);
         assert_eq!(cursor.current(), Some(&1));
         assert_eq!(cursor.peek_next(), None);
 
         cursor.insert_next(2);
+        assert_eq!(cursor.peek_predecessor(), None);
+        assert_eq!(cursor.current(), Some(&1));
+        assert_eq!(cursor.peek_next(), Some(&2));
+
         cursor.move_next();
-        assert_eq!(cursor.peek_pred(), Some(&1));
+        assert_eq!(cursor.peek_predecessor(), Some(Predecessor::Previous(&1)));
         assert_eq!(cursor.current(), Some(&2));
         assert_eq!(cursor.peek_next(), None);
 
         cursor.insert_next(3);
+        assert_eq!(cursor.peek_predecessor(), Some(Predecessor::Previous(&1)));
+        assert_eq!(cursor.current(), Some(&2));
+        assert_eq!(cursor.peek_next(), Some(&3));
 
         cursor.move_next();
-        assert_eq!(cursor.peek_pred(), Some(&2));
+        assert_eq!(cursor.peek_predecessor(), Some(Predecessor::Previous(&2)));
         assert_eq!(cursor.current(), Some(&3));
         assert_eq!(cursor.peek_next(), None);
 
         cursor.move_child();
-        assert_eq!(cursor.peek_pred(), Some(&3));
+        assert_eq!(cursor.peek_predecessor(), Some(Predecessor::Parent(&3)));
         assert_eq!(cursor.current(), None);
         assert_eq!(cursor.peek_next(), None);
 
         cursor.insert_next(4);
-        assert_eq!(cursor.peek_pred(), Some(&3));
+        assert_eq!(cursor.peek_predecessor(), Some(Predecessor::Parent(&3)));
         assert_eq!(cursor.current(), Some(&4));
         assert_eq!(cursor.peek_next(), None);
 
         cursor.move_next();
-        assert_eq!(cursor.peek_pred(), Some(&4));
+        assert_eq!(cursor.peek_predecessor(), Some(Predecessor::Previous(&4)));
         assert_eq!(cursor.current(), None);
         assert_eq!(cursor.peek_next(), None);
 
         cursor.insert_next(5);
-        assert_eq!(cursor.peek_pred(), Some(&4));
+        assert_eq!(cursor.peek_predecessor(), Some(Predecessor::Previous(&4)));
         assert_eq!(cursor.current(), Some(&5));
         assert_eq!(cursor.peek_next(), None);
 
         cursor.move_next();
-        assert_eq!(cursor.peek_pred(), Some(&5));
+        assert_eq!(cursor.peek_predecessor(), Some(Predecessor::Previous(&5)));
         assert_eq!(cursor.current(), None);
         assert_eq!(cursor.peek_next(), None);
 
         cursor.insert_next(6);
-        assert_eq!(cursor.peek_pred(), Some(&5));
+        assert_eq!(cursor.peek_predecessor(), Some(Predecessor::Previous(&5)));
         assert_eq!(cursor.current(), Some(&6));
         assert_eq!(cursor.peek_next(), None);
 
         cursor.move_parent();
-        assert_eq!(cursor.peek_pred(), Some(&2));
+        assert_eq!(cursor.peek_predecessor(), Some(Predecessor::Previous(&2)));
         assert_eq!(cursor.current(), Some(&3));
         assert_eq!(cursor.peek_next(), None);
 
         cursor.move_parent();
-        assert_eq!(cursor.peek_pred(), None);
+        assert_eq!(cursor.peek_predecessor(), None);
         assert_eq!(cursor.current(), Some(&1));
         assert_eq!(cursor.peek_next(), Some(&2));
     }
