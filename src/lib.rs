@@ -1096,10 +1096,14 @@ impl<T> Preceding<T> {
 /// A [`SyntaxTree`] node.
 #[derive(Debug)]
 pub struct Node<T> {
-    element: T,
-    preceding: Option<NodePredecessor<T>>,
-    child: Option<NonNull<Node<T>>>,
-    next: Option<NonNull<Node<T>>>,
+    /// The element.
+    pub element: T,
+    /// The preceding node.
+    pub preceding: Option<NodePredecessor<T>>,
+    /// The child node.
+    pub child: Option<NonNull<Node<T>>>,
+    /// The next node.
+    pub next: Option<NonNull<Node<T>>>,
 }
 
 #[cfg(test)]
