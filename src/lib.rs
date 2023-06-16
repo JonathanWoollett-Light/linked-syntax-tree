@@ -295,7 +295,54 @@ impl<'a, T> Clone for Cursor<'a, T> {
         }
     }
 }
-impl<T: std::fmt::Debug> Cursor<'_, T> {
+impl<T> Cursor<'_, T> {
+    /// Sets the `preceding` member.
+    pub fn set_preceding(&mut self, preceding: Option<NodePredecessor<T>>) {
+        self.preceding = preceding;
+    }
+
+    /// Sets the `current` member.
+    pub fn set_current(&mut self, current: Option<NonNull<Node<T>>>) {
+        self.current = current;
+    }
+
+    /// Gets the `preceding` member.
+    #[must_use]
+    pub fn get_preceding(&self) -> &Option<NodePredecessor<T>> {
+        &self.preceding
+    }
+
+    /// Gets the `current` member.
+    #[must_use]
+    pub fn get_current(&self) -> &Option<NonNull<Node<T>>> {
+        &self.current
+    }
+
+    /// Gets the `tree` member.
+    #[must_use]
+    pub fn get_tree(&self) -> &SyntaxTree<T> {
+        self.tree
+    }
+
+    /// Constructs a new cursor.
+    ///
+    /// # Safety
+    ///
+    /// Requires that `preceding` and `current` are present nodes in `tree` and that `preceding` is
+    /// the preceding node to `current`.
+    #[must_use]
+    pub unsafe fn new(
+        preceding: Option<NodePredecessor<T>>,
+        current: Option<NonNull<Node<T>>>,
+        tree: &SyntaxTree<T>,
+    ) -> Cursor<'_, T> {
+        Cursor {
+            preceding,
+            current,
+            tree,
+        }
+    }
+
     /// Provides a reference to the root element.
     #[must_use]
     pub fn root(&self) -> Option<&T> {
@@ -472,6 +519,25 @@ pub struct CursorMut<'a, T> {
 }
 
 impl<T> CursorMut<'_, T> {
+    /// Constructs a new cursor.
+    ///
+    /// # Safety
+    ///
+    /// Requires that `preceding` and `current` are present nodes in `tree` and that `preceding` is
+    /// the preceding node to `current`.
+    #[must_use]
+    pub unsafe fn new(
+        preceding: Option<NodePredecessor<T>>,
+        current: Option<NonNull<Node<T>>>,
+        tree: &mut SyntaxTree<T>,
+    ) -> CursorMut<'_, T> {
+        CursorMut {
+            preceding,
+            current,
+            tree,
+        }
+    }
+
     /// Provides a mutable reference to the root element.
     pub fn root_mut(&mut self) -> Option<&mut T> {
         self.tree
@@ -1027,8 +1093,9 @@ impl<T> Preceding<T> {
     }
 }
 
+/// A [`SyntaxTree`] node.
 #[derive(Debug)]
-struct Node<T> {
+pub struct Node<T> {
     element: T,
     preceding: Option<NodePredecessor<T>>,
     child: Option<NonNull<Node<T>>>,
