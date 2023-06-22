@@ -812,6 +812,7 @@ impl<T> CursorMut<T> {
                     self.upper_bound = None;
                     Ok(())
                 }
+                None if cursor.lower_bound.is_none() => Ok(()),
                 _ => Err(cursor),
             }
         }
