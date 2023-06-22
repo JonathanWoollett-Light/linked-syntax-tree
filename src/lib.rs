@@ -819,7 +819,7 @@ impl<T> CursorMut<T> {
         }
     }
 
-    // TODO Make `insert_preceding`, `insert_next`, `insert_child` and `remove_current` work with `self.upper_bound`.
+    // TODO Make `insert_preceding`, `insert_next`, `insert_child`, `flatten` and `remove_current` work with `self.upper_bound`.
 
     /// Inserts an element before the current element.
     ///
@@ -1103,6 +1103,26 @@ impl<T> CursorMut<T> {
                 alloc::dealloc(current.as_ptr().cast(), alloc::Layout::new::<Node<T>>());
             },
             (None, _) => {}
+        }
+    }
+
+    /// Moves the children of the current element to next elements.
+    pub fn flatten(&mut self) {
+        unsafe {
+            if let Some(mut current) = self.current {
+                if let Some(mut child) = current.as_ref().child {
+                    let mut last_child = child;
+                    while let Some(next_child) = last_child.as_ref().next {
+                        last_child = next_child;
+                    }
+                    if let Some(mut next) = current.as_mut().next {
+                        next.as_mut().preceding = Some(Preceding::Previous(last_child));
+                        last_child.as_mut().next = Some(next);
+                    }
+                    current.as_mut().next = Some(child);
+                    child.as_mut().preceding = Some(Preceding::Previous(current));
+                }
+            }
         }
     }
 }
