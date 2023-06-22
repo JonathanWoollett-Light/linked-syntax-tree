@@ -90,6 +90,7 @@ impl<T> SyntaxTree<T> {
             preceding: None,
             current: self.root,
             tree: self,
+            lower_bound: None,
         }
     }
 
@@ -99,6 +100,7 @@ impl<T> SyntaxTree<T> {
             preceding: None,
             current: self.root,
             tree: self,
+            upper_bound: None,
         }
     }
 
@@ -286,6 +288,7 @@ pub struct Cursor<'a, T> {
     current: Option<NonNull<Node<T>>>,
     /// The underlying [`SyntaxTree`].
     pub tree: &'a SyntaxTree<T>,
+    lower_bound: Option<NonNull<Node<T>>>,
 }
 impl<'a, T> Clone for Cursor<'a, T> {
     fn clone(&self) -> Self {
@@ -293,6 +296,7 @@ impl<'a, T> Clone for Cursor<'a, T> {
             preceding: self.preceding,
             current: self.current,
             tree: self.tree,
+            lower_bound: self.lower_bound,
         }
     }
 }
@@ -319,10 +323,238 @@ impl<T> Cursor<'_, T> {
         &self.current
     }
 
-    /// Gets the `tree` member.
+    /// Constructs a new cursor.
+    ///
+    /// # Safety
+    ///
+    /// Requires that `preceding` and `current` are present nodes in `tree` and that `preceding` is
+    /// the preceding node to `current`.
     #[must_use]
-    pub fn get_tree(&self) -> &SyntaxTree<T> {
-        self.tree
+    pub unsafe fn new(
+        preceding: Option<NodePredecessor<T>>,
+        current: Option<NonNull<Node<T>>>,
+        tree: &SyntaxTree<T>,
+        lower_bound: Option<NonNull<Node<T>>>,
+    ) -> Cursor<'_, T> {
+        Cursor {
+            preceding,
+            current,
+            tree,
+            lower_bound,
+        }
+    }
+
+    /// Provides a reference to the root element.
+    #[must_use]
+    pub fn root(&self) -> Option<&T> {
+        if self.tree.root == self.lower_bound {
+            return None;
+        }
+        self.tree.root.map(|r| unsafe { &r.as_ref().element })
+    }
+
+    /// Get the current element.
+    ///
+    /// Returns `None` if the current element is `None` or if the current element is the lower bound.
+    #[must_use]
+    pub fn current(&self) -> Option<&T> {
+        if self.current == self.lower_bound {
+            return None;
+        }
+        self.current.map(|ptr| unsafe { &ptr.as_ref().element })
+    }
+
+    /// Moves the cursor to the preceding element.
+    ///
+    /// If there is no preceding element the cursor is not moved.
+    pub fn move_preceding(&mut self) {
+        if let Some(preceding) = self.preceding {
+            self.current = Some(preceding.unwrap());
+            self.preceding = unsafe { preceding.unwrap().as_ref().preceding.as_ref().copied() };
+        }
+    }
+
+    /// Moves the cursor to the next element.
+    pub fn move_next(&mut self) {
+        if let Some(current) = self.current {
+            if let Some(guard) = self.lower_bound {
+                if guard == current {
+                    return;
+                }
+            }
+            self.preceding = Some(Preceding::Previous(current));
+            self.current = unsafe { current.as_ref().next };
+        }
+    }
+
+    /// Moves the cursor to the child element.
+    pub fn move_child(&mut self) {
+        if let Some(current) = self.current {
+            if let Some(guard) = self.lower_bound {
+                if guard == current {
+                    return;
+                }
+            }
+            self.preceding = Some(Preceding::Parent(current));
+            let opt = unsafe { current.as_ref().child.as_ref() };
+            self.current = opt.copied();
+        }
+    }
+
+    /// Moves the cursor through preceding elements until reaching a parent or
+    /// the root element.
+    ///
+    /// Returns `true` if the cursor was moved to a parent or `false` if it was moved to the root
+    /// element.
+    pub fn move_parent(&mut self) -> bool {
+        loop {
+            match self.preceding {
+                Some(Preceding::Previous(previous)) => {
+                    self.current = Some(previous);
+                    self.preceding = unsafe { previous.as_ref().preceding };
+                }
+                Some(Preceding::Parent(parent)) => {
+                    self.current = Some(parent);
+                    self.preceding = unsafe { parent.as_ref().preceding };
+                    break true;
+                }
+                None => break false,
+            }
+        }
+    }
+
+    /// Moves the cursor to the successor element or the root element if a successor is not present.
+    ///
+    /// Returns `true` if the cursor was moved to a successor or `false` if it was moved to the root
+    /// element.
+    pub fn move_successor(&mut self) -> bool {
+        if self.peek_child().is_some() {
+            self.move_child();
+            true
+        } else if self.peek_next().is_some() {
+            self.move_next();
+            true
+        } else {
+            let parent = self.move_parent();
+            let cond = parent && self.peek_next().is_some();
+            if cond {
+                self.move_next();
+            }
+            cond
+        }
+    }
+
+    /// Moves the cursor to the predecessor element or the root element if a predecessor is not
+    /// present.
+    ///
+    /// Returns `true` if the cursor was moved to a predecessor or `false` if it was moved to the
+    /// root element.
+    pub fn move_predecessor(&mut self) -> bool {
+        match self.peek_preceding() {
+            Some(Preceding::Parent(_)) => {
+                self.move_preceding();
+                true
+            }
+            Some(Preceding::Previous(_)) => {
+                self.move_preceding();
+                while self.peek_child().is_some() {
+                    self.move_child();
+                    while self.peek_next().is_some() {
+                        self.move_next();
+                    }
+                }
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// Returns a reference to the next element.
+    #[must_use]
+    pub fn peek_next(&self) -> Option<&T> {
+        if let Some(current) = self.current {
+            if let Some(guard) = self.lower_bound {
+                if guard == current {
+                    return None;
+                }
+            }
+            unsafe { current.as_ref().next.map(|n| &n.as_ref().element) }
+        } else {
+            None
+        }
+    }
+
+    /// Returns a reference to the parent element.
+    ///
+    /// Wrapper around `self.peek_preceding().and_then(Preceding::parent)`.
+    #[must_use]
+    pub fn peek_parent(&self) -> Option<&T> {
+        self.peek_preceding().and_then(Preceding::parent)
+    }
+
+    /// Returns a reference to the previous element.
+    ///
+    /// Wrapper around `self.peek_preceding().and_then(Preceding::previous)`
+    /// .
+    #[must_use]
+    pub fn peek_previous(&self) -> Option<&T> {
+        self.peek_preceding().and_then(Preceding::previous)
+    }
+
+    /// Returns a reference to the preceding element.
+    #[must_use]
+    pub fn peek_preceding(&self) -> Option<Preceding<&T>> {
+        self.preceding
+            .map(|p| unsafe { p.map(|p| &p.as_ref().element) })
+    }
+
+    /// Returns a reference to the child element.
+    #[must_use]
+    pub fn peek_child(&self) -> Option<&T> {
+        if let Some(current) = self.current {
+            if let Some(guard) = self.lower_bound {
+                if guard == current {
+                    return None;
+                }
+            }
+            unsafe { current.as_ref().child.map(|n| &n.as_ref().element) }
+        } else {
+            None
+        }
+    }
+}
+
+/// Roughly matches [`std::collections::linked_list::CursorMut`].
+#[derive(Debug)]
+pub struct CursorMut<'a, T> {
+    preceding: Option<NodePredecessor<T>>,
+    current: Option<NonNull<Node<T>>>,
+    /// The underlying [`SyntaxTree`].
+    pub tree: &'a mut SyntaxTree<T>,
+    upper_bound: Option<NonNull<Node<T>>>,
+}
+
+impl<T> CursorMut<'_, T> {
+    /// Sets the `preceding` member.
+    pub fn set_preceding(&mut self, preceding: Option<NodePredecessor<T>>) {
+        self.preceding = preceding;
+    }
+
+    /// Sets the `current` member.
+    pub fn set_current(&mut self, current: Option<NonNull<Node<T>>>) {
+        self.current = current;
+    }
+
+    /// Gets the `preceding` member.
+    #[must_use]
+    pub fn get_preceding(&self) -> &Option<NodePredecessor<T>> {
+        &self.preceding
+    }
+
+    /// Gets the `current` member.
+    #[must_use]
+    pub fn get_current(&self) -> &Option<NonNull<Node<T>>> {
+        &self.current
     }
 
     /// Constructs a new cursor.
@@ -335,12 +567,14 @@ impl<T> Cursor<'_, T> {
     pub unsafe fn new(
         preceding: Option<NodePredecessor<T>>,
         current: Option<NonNull<Node<T>>>,
-        tree: &SyntaxTree<T>,
-    ) -> Cursor<'_, T> {
-        Cursor {
+        tree: &mut SyntaxTree<T>,
+        upper_bound: Option<NonNull<Node<T>>>,
+    ) -> CursorMut<'_, T> {
+        CursorMut {
             preceding,
             current,
             tree,
+            upper_bound,
         }
     }
 
@@ -351,6 +585,8 @@ impl<T> Cursor<'_, T> {
     }
 
     /// Get the current element.
+    ///
+    /// Returns `None` if the current element is `None` or if the current element is the lower bound.
     #[must_use]
     pub fn current(&self) -> Option<&T> {
         self.current.map(|ptr| unsafe { &ptr.as_ref().element })
@@ -361,6 +597,11 @@ impl<T> Cursor<'_, T> {
     /// If there is no preceding element the cursor is not moved.
     pub fn move_preceding(&mut self) {
         if let Some(preceding) = self.preceding {
+            if let Some(guard) = self.upper_bound {
+                if guard == preceding.unwrap() {
+                    return;
+                }
+            }
             self.current = Some(preceding.unwrap());
             self.preceding = unsafe { preceding.unwrap().as_ref().preceding.as_ref().copied() };
         }
@@ -392,10 +633,21 @@ impl<T> Cursor<'_, T> {
         loop {
             match self.preceding {
                 Some(Preceding::Previous(previous)) => {
+                    if let Some(guard) = self.upper_bound {
+                        if guard == previous {
+                            break false;
+                        }
+                    }
                     self.current = Some(previous);
                     self.preceding = unsafe { previous.as_ref().preceding };
                 }
                 Some(Preceding::Parent(parent)) => {
+                    if let Some(guard) = self.upper_bound {
+                        if guard == parent {
+                            break false;
+                        }
+                    }
+
                     self.current = Some(parent);
                     self.preceding = unsafe { parent.as_ref().preceding };
                     break true;
@@ -481,6 +733,10 @@ impl<T> Cursor<'_, T> {
     /// Returns a reference to the preceding element.
     #[must_use]
     pub fn peek_preceding(&self) -> Option<Preceding<&T>> {
+        if self.upper_bound == self.preceding.map(Preceding::unwrap) {
+            return None;
+        }
+
         self.preceding
             .map(|p| unsafe { p.map(|p| &p.as_ref().element) })
     }
@@ -492,51 +748,6 @@ impl<T> Cursor<'_, T> {
             unsafe { current.as_ref().child.map(|n| &n.as_ref().element) }
         } else {
             None
-        }
-    }
-}
-
-impl<'a, T> std::ops::Deref for CursorMut<'a, T> {
-    type Target = Cursor<'a, T>;
-
-    fn deref(&self) -> &Self::Target {
-        // Is this safe? I don't know, but it sure avoids code duplication.
-        unsafe { &*(self as *const CursorMut<'_, T>).cast() }
-    }
-}
-impl<'a, T> std::ops::DerefMut for CursorMut<'a, T> {
-    fn deref_mut(&mut self) -> &mut Self::Target {
-        // Is this safe? I don't know, but it sure avoids code duplication.
-        unsafe { &mut *(self as *mut CursorMut<'_, T>).cast() }
-    }
-}
-
-/// Roughly matches [`std::collections::linked_list::CursorMut`].
-#[derive(Debug)]
-pub struct CursorMut<'a, T> {
-    preceding: Option<NodePredecessor<T>>,
-    current: Option<NonNull<Node<T>>>,
-    /// The underlying [`SyntaxTree`].
-    pub tree: &'a mut SyntaxTree<T>,
-}
-
-impl<T> CursorMut<'_, T> {
-    /// Constructs a new cursor.
-    ///
-    /// # Safety
-    ///
-    /// Requires that `preceding` and `current` are present nodes in `tree` and that `preceding` is
-    /// the preceding node to `current`.
-    #[must_use]
-    pub unsafe fn new(
-        preceding: Option<NodePredecessor<T>>,
-        current: Option<NonNull<Node<T>>>,
-        tree: &mut SyntaxTree<T>,
-    ) -> CursorMut<'_, T> {
-        CursorMut {
-            preceding,
-            current,
-            tree,
         }
     }
 
@@ -552,6 +763,21 @@ impl<T> CursorMut<'_, T> {
         self.current
             .map(|mut ptr| unsafe { &mut ptr.as_mut().element })
     }
+
+    /// Returns an immutable cursor to all elements before the current element.
+    pub fn split(&mut self) -> Cursor<T> {
+        self.upper_bound = self.preceding.map(Preceding::unwrap);
+        Cursor {
+            preceding: self
+                .preceding
+                .and_then(|p| unsafe { p.unwrap().as_ref().preceding }),
+            current: self.preceding.map(Preceding::unwrap),
+            tree: self.tree,
+            lower_bound: self.current,
+        }
+    }
+
+    // TODO Make `insert_preceding`, `insert_next`, `insert_child` and `remove_current` work with `self.upper_bound`.
 
     /// Inserts an element before the current element.
     ///
@@ -837,157 +1063,19 @@ impl<T> CursorMut<'_, T> {
             (None, _) => {}
         }
     }
+}
 
-    /// Inserts the elements from the given `SyntaxTree` after the current one.
-    ///
-    /// If the current element is `None` it becomes the root element from the given `SyntaxTree`.
-    // It would be unsafe to modifier the passed `tree`, as a mutable cursor on `self` may modify it
-    // at the same time
-    #[allow(clippy::needless_pass_by_value)]
-    pub fn splice_after(&mut self, tree: SyntaxTree<T>) {
-        if let Some(mut tree_root) = tree.root {
-            match (self.current, self.preceding) {
-                (Some(mut current), _) => unsafe {
-                    if let Some(mut self_next) = current.as_ref().next {
-                        // Finds the last element in `tree`.
-                        let mut tree_last = tree_root;
-                        while let Some(next) = tree_last.as_ref().next {
-                            tree_last = next;
-                        }
-                        tree_last.as_mut().next = Some(self_next);
-                        self_next.as_mut().preceding = Some(Preceding::Previous(tree_last));
-                        tree_root.as_mut().preceding = Some(Preceding::Previous(current));
-                        current.as_mut().next = tree.root;
-                    } else {
-                        tree_root.as_mut().preceding = Some(Preceding::Previous(current));
-                        current.as_mut().next = tree.root;
-                    }
-                },
-                (None, Some(preceding)) => unsafe {
-                    self.current = Some(tree_root);
-                    match preceding {
-                        Preceding::Parent(mut parent) => {
-                            parent.as_mut().child = Some(tree_root);
-                        }
-                        Preceding::Previous(mut previous) => {
-                            previous.as_mut().next = Some(tree_root);
-                        }
-                    }
-                    tree_root.as_mut().preceding = Some(preceding);
-                },
-                // It will never be the case that when a tree has a root a cursor's current and
-                // preceding values are both `None`.
-                (None, None) => {
-                    self.current = tree.root;
-                    self.tree.root = tree.root;
-                }
-            }
-        }
-    }
-
-    /// Inserts the elements from the given `SyntaxTree` before the current one.
-    ///
-    /// If the current element is `None` it becomes the root element from the given `SyntaxTree`.
-    // It would be unsafe to modifier the passed `tree`, as a mutable cursor on `self` may modify it
-    // at the same time
-    #[allow(clippy::needless_pass_by_value)]
-    pub fn splice_before(&mut self, tree: SyntaxTree<T>) {
-        if let Some(mut tree_root) = tree.root {
-            match (self.current, self.preceding) {
-                (Some(mut current), Some(previous)) => unsafe {
-                    // Finds the last element in `tree`.
-                    let mut tree_last = tree_root;
-                    while let Some(next) = tree_last.as_ref().next {
-                        tree_last = next;
-                    }
-                    tree_last.as_mut().next = Some(current);
-                    let pred = Some(Preceding::Previous(tree_last));
-                    current.as_mut().preceding = pred;
-                    self.preceding = pred;
-                    match previous {
-                        Preceding::Parent(mut parent) => {
-                            parent.as_mut().child = Some(tree_root);
-                        }
-                        Preceding::Previous(mut previous) => {
-                            previous.as_mut().next = Some(tree_root);
-                        }
-                    }
-                },
-                (Some(mut current), None) => unsafe {
-                    // Finds the last element in `tree`.
-                    let mut tree_last = tree_root;
-                    while let Some(next) = tree_last.as_ref().next {
-                        tree_last = next;
-                    }
-                    tree_last.as_mut().next = Some(current);
-                    let pred = Some(Preceding::Previous(tree_last));
-                    current.as_mut().preceding = pred;
-                    self.preceding = pred;
-                    self.tree.root = Some(tree_root);
-                },
-                (None, Some(previous)) => unsafe {
-                    self.current = Some(tree_root);
-                    match previous {
-                        Preceding::Parent(mut parent) => {
-                            parent.as_mut().child = Some(tree_root);
-                        }
-                        Preceding::Previous(mut previous) => {
-                            previous.as_mut().next = Some(tree_root);
-                        }
-                    }
-                    tree_root.as_mut().preceding = Some(previous);
-                },
-                (None, None) => {
-                    self.current = tree.root;
-                    self.tree.root = tree.root;
-                }
-            }
-        }
-    }
-
-    /// Splits the list into two after the current element. This will return a new list consisting
-    /// of everything after the cursor, with the original list retaining everything before.
-    pub fn split_after(&mut self) -> SyntaxTree<T> {
-        match (self.current, self.preceding) {
-            (Some(mut current), _) => unsafe {
-                if let Some(next) = current.as_ref().next {
-                    current.as_mut().next = None;
-                    SyntaxTree { root: Some(next) }
-                } else {
-                    SyntaxTree { root: None }
-                }
-            },
-            (None, _) => SyntaxTree { root: None },
-        }
-    }
-
-    /// Splits the list into two before the current element. This will return a new list consisting
-    /// of everything before the cursor, with the original list retaining everything after.
-    pub fn split_before(&mut self) -> SyntaxTree<T> {
-        match (self.current, self.preceding) {
-            (Some(mut current), Some(previous)) => unsafe {
-                previous.unwrap().as_mut().next = None;
-                self.preceding = None;
-                current.as_mut().preceding = None;
-
-                let temp = SyntaxTree {
-                    root: self.tree.root,
-                };
-                self.tree.root = Some(current);
-                temp
-            },
-            (None, Some(previous)) => unsafe {
-                previous.unwrap().as_mut().next = None;
-                self.preceding = None;
-
-                let temp = SyntaxTree {
-                    root: self.tree.root,
-                };
-                self.tree.root = None;
-                temp
-            },
-            (_, None) => SyntaxTree { root: None },
-        }
+/// A relationship between an element its preceding element.
+#[derive(Debug)]
+pub enum Relationship {
+    /// The preceding element is its previous element.
+    Previous,
+    /// The preceding element is its parent element.
+    Parent,
+}
+impl Default for Relationship {
+    fn default() -> Self {
+        Self::Previous
     }
 }
 
@@ -1512,98 +1600,6 @@ mod tests {
         assert_eq!(iter.next(), Some(Element { item: &1, depth: 0 }));
         assert_eq!(iter.next(), None);
         assert_eq!(tree.len(), 5);
-    }
-
-    #[test]
-    fn splice_and_split_after() {
-        let mut tree_one = SyntaxTree::<u8>::default();
-        let mut cursor_one = tree_one.cursor_mut();
-        cursor_one.insert_next(1);
-        cursor_one.insert_next(2);
-        cursor_one.insert_next(3);
-
-        let mut tree_two = SyntaxTree::<u8>::default();
-        let mut cursor_two = tree_two.cursor_mut();
-        cursor_two.insert_next(4);
-        cursor_two.insert_next(5);
-        cursor_two.insert_next(6);
-
-        cursor_one.splice_after(tree_two);
-
-        // Its easier to use the iterator to compare here.
-        let mut iter = tree_one.iter();
-        assert_eq!(iter.next(), Some(Element { item: &1, depth: 0 }));
-        assert_eq!(iter.next(), Some(Element { item: &4, depth: 0 }));
-        assert_eq!(iter.next(), Some(Element { item: &6, depth: 0 }));
-        assert_eq!(iter.next(), Some(Element { item: &5, depth: 0 }));
-        assert_eq!(iter.next(), Some(Element { item: &3, depth: 0 }));
-        assert_eq!(iter.next(), Some(Element { item: &2, depth: 0 }));
-        assert_eq!(iter.next(), None);
-        assert_eq!(iter.next(), None);
-
-        let mut cursor = tree_one.cursor_mut();
-        cursor.move_next();
-        cursor.move_next();
-        let tree_three = cursor.split_after();
-        let mut iter = tree_one.iter();
-        assert_eq!(iter.next(), Some(Element { item: &1, depth: 0 }));
-        assert_eq!(iter.next(), Some(Element { item: &4, depth: 0 }));
-        assert_eq!(iter.next(), Some(Element { item: &6, depth: 0 }));
-        assert_eq!(iter.next(), None);
-        assert_eq!(iter.next(), None);
-
-        let mut iter = tree_three.iter();
-        assert_eq!(iter.next(), Some(Element { item: &5, depth: 0 }));
-        assert_eq!(iter.next(), Some(Element { item: &3, depth: 0 }));
-        assert_eq!(iter.next(), Some(Element { item: &2, depth: 0 }));
-        assert_eq!(iter.next(), None);
-        assert_eq!(iter.next(), None);
-    }
-    #[test]
-    fn splice_and_split_before() {
-        let mut tree_one = SyntaxTree::<u8>::default();
-        let mut cursor_one = tree_one.cursor_mut();
-        cursor_one.insert_next(1);
-        cursor_one.insert_next(2);
-        cursor_one.insert_next(3);
-
-        let mut tree_two = SyntaxTree::<u8>::default();
-        let mut cursor_two = tree_two.cursor_mut();
-        cursor_two.insert_next(4);
-        cursor_two.insert_next(5);
-        cursor_two.insert_next(6);
-
-        cursor_one.splice_before(tree_two);
-
-        // Its easier to use the iterator to compare here.
-        let mut iter = tree_one.iter();
-        assert_eq!(iter.next(), Some(Element { item: &4, depth: 0 }));
-        assert_eq!(iter.next(), Some(Element { item: &6, depth: 0 }));
-        assert_eq!(iter.next(), Some(Element { item: &5, depth: 0 }));
-        assert_eq!(iter.next(), Some(Element { item: &1, depth: 0 }));
-        assert_eq!(iter.next(), Some(Element { item: &3, depth: 0 }));
-        assert_eq!(iter.next(), Some(Element { item: &2, depth: 0 }));
-        assert_eq!(iter.next(), None);
-        assert_eq!(iter.next(), None);
-
-        let mut cursor = tree_one.cursor_mut();
-        cursor.move_next();
-        cursor.move_next();
-        cursor.move_next();
-        let tree_three = cursor.split_before();
-        let mut iter = tree_one.iter();
-        assert_eq!(iter.next(), Some(Element { item: &1, depth: 0 }));
-        assert_eq!(iter.next(), Some(Element { item: &3, depth: 0 }));
-        assert_eq!(iter.next(), Some(Element { item: &2, depth: 0 }));
-        assert_eq!(iter.next(), None);
-        assert_eq!(iter.next(), None);
-
-        let mut iter = tree_three.iter();
-        assert_eq!(iter.next(), Some(Element { item: &4, depth: 0 }));
-        assert_eq!(iter.next(), Some(Element { item: &6, depth: 0 }));
-        assert_eq!(iter.next(), Some(Element { item: &5, depth: 0 }));
-        assert_eq!(iter.next(), None);
-        assert_eq!(iter.next(), None);
     }
 
     #[test]
