@@ -85,21 +85,21 @@ type NodePredecessor<T> = Preceding<NonNull<Node<T>>>;
 impl<T> SyntaxTree<T> {
     /// Provides a cursor at the front element.
     #[must_use]
-    pub fn cursor(&self) -> Cursor<'_, T> {
+    pub fn cursor(&self) -> Cursor<T> {
         Cursor {
             preceding: None,
             current: self.root,
-            tree: self,
+            tree: NonNull::new(self as *const _ as *mut _).unwrap(),
             lower_bound: None,
         }
     }
 
     /// Provides a cursor with editing operation at the root element.
-    pub fn cursor_mut(&mut self) -> CursorMut<'_, T> {
+    pub fn cursor_mut(&mut self) -> CursorMut<T> {
         CursorMut {
             preceding: None,
             current: self.root,
-            tree: self,
+            tree: NonNull::new(self).unwrap(),
             upper_bound: None,
         }
     }
@@ -283,14 +283,14 @@ pub struct Element<T> {
 
 /// Roughly matches [`std::collections::linked_list::Cursor`].
 #[derive(Debug)]
-pub struct Cursor<'a, T> {
+pub struct Cursor<T> {
     preceding: Option<NodePredecessor<T>>,
     current: Option<NonNull<Node<T>>>,
     /// The underlying [`SyntaxTree`].
-    pub tree: &'a SyntaxTree<T>,
+    pub tree: NonNull<SyntaxTree<T>>,
     lower_bound: Option<NonNull<Node<T>>>,
 }
-impl<'a, T> Clone for Cursor<'a, T> {
+impl<T> Clone for Cursor<T> {
     fn clone(&self) -> Self {
         Self {
             preceding: self.preceding,
@@ -300,7 +300,7 @@ impl<'a, T> Clone for Cursor<'a, T> {
         }
     }
 }
-impl<T> Cursor<'_, T> {
+impl<T> Cursor<T> {
     /// Sets the `preceding` member.
     pub fn set_preceding(&mut self, preceding: Option<NodePredecessor<T>>) {
         self.preceding = preceding;
@@ -333,9 +333,9 @@ impl<T> Cursor<'_, T> {
     pub unsafe fn new(
         preceding: Option<NodePredecessor<T>>,
         current: Option<NonNull<Node<T>>>,
-        tree: &SyntaxTree<T>,
+        tree: NonNull<SyntaxTree<T>>,
         lower_bound: Option<NonNull<Node<T>>>,
-    ) -> Cursor<'_, T> {
+    ) -> Cursor<T> {
         Cursor {
             preceding,
             current,
@@ -347,10 +347,13 @@ impl<T> Cursor<'_, T> {
     /// Provides a reference to the root element.
     #[must_use]
     pub fn root(&self) -> Option<&T> {
-        if self.tree.root == self.lower_bound {
-            return None;
+        unsafe {
+            let mut preceding_opt = self.preceding;
+            while let Some(preceding) = preceding_opt {
+                preceding_opt = preceding.unwrap().as_ref().preceding;
+            }
+            preceding_opt.map(|p|&p.unwrap().as_ref().element)
         }
-        self.tree.root.map(|r| unsafe { &r.as_ref().element })
     }
 
     /// Get the current element.
@@ -526,15 +529,15 @@ impl<T> Cursor<'_, T> {
 
 /// Roughly matches [`std::collections::linked_list::CursorMut`].
 #[derive(Debug)]
-pub struct CursorMut<'a, T> {
+pub struct CursorMut<T> {
     preceding: Option<NodePredecessor<T>>,
     current: Option<NonNull<Node<T>>>,
     /// The underlying [`SyntaxTree`].
-    pub tree: &'a mut SyntaxTree<T>,
-    upper_bound: Option<NonNull<Node<T>>>,
+    pub tree: NonNull<SyntaxTree<T>>,
+    upper_bound: Option<NodePredecessor<T>>,
 }
 
-impl<T> CursorMut<'_, T> {
+impl<T> CursorMut<T> {
     /// Sets the `preceding` member.
     pub fn set_preceding(&mut self, preceding: Option<NodePredecessor<T>>) {
         self.preceding = preceding;
@@ -567,9 +570,9 @@ impl<T> CursorMut<'_, T> {
     pub unsafe fn new(
         preceding: Option<NodePredecessor<T>>,
         current: Option<NonNull<Node<T>>>,
-        tree: &mut SyntaxTree<T>,
-        upper_bound: Option<NonNull<Node<T>>>,
-    ) -> CursorMut<'_, T> {
+        tree: NonNull<SyntaxTree<T>>,
+        upper_bound: Option<NodePredecessor<T>>,
+    ) -> CursorMut<T> {
         CursorMut {
             preceding,
             current,
@@ -581,7 +584,23 @@ impl<T> CursorMut<'_, T> {
     /// Provides a reference to the root element.
     #[must_use]
     pub fn root(&self) -> Option<&T> {
-        self.tree.root.map(|r| unsafe { &r.as_ref().element })
+        unsafe {
+            match self.upper_bound {
+                Some(Preceding::Parent(parent)) => {
+                    parent.as_ref().child.map(|c| &c.as_ref().element)
+                }
+                Some(Preceding::Previous(previous)) => {
+                    previous.as_ref().next.map(|n| &n.as_ref().element)
+                }
+                None => {
+                    let mut preceding_opt = self.preceding;
+                    while let Some(preceding) = preceding_opt {
+                        preceding_opt = preceding.unwrap().as_ref().preceding;
+                    }
+                    preceding_opt.map(|p|&p.unwrap().as_ref().element)
+                },
+            }
+        }
     }
 
     /// Get the current element.
@@ -596,15 +615,20 @@ impl<T> CursorMut<'_, T> {
     ///
     /// If there is no preceding element the cursor is not moved.
     pub fn move_preceding(&mut self) {
-        if let Some(preceding) = self.preceding {
-            if let Some(guard) = self.upper_bound {
-                if guard == preceding.unwrap() {
-                    return;
-                }
-            }
-            self.current = Some(preceding.unwrap());
-            self.preceding = unsafe { preceding.unwrap().as_ref().preceding.as_ref().copied() };
+        // When `self.preceding == None` `self.upper_bound` will be `None`.
+        if self.preceding == self.upper_bound {
+            return;
         }
+        self.current = Some(self.preceding.unwrap().unwrap());
+        self.preceding = unsafe {
+            self.preceding
+                .unwrap()
+                .unwrap()
+                .as_ref()
+                .preceding
+                .as_ref()
+                .copied()
+        };
     }
 
     /// Moves the cursor to the next element.
@@ -631,23 +655,16 @@ impl<T> CursorMut<'_, T> {
     /// element.
     pub fn move_parent(&mut self) -> bool {
         loop {
+            if self.preceding == self.upper_bound {
+                break false;
+            }
+
             match self.preceding {
                 Some(Preceding::Previous(previous)) => {
-                    if let Some(guard) = self.upper_bound {
-                        if guard == previous {
-                            break false;
-                        }
-                    }
                     self.current = Some(previous);
                     self.preceding = unsafe { previous.as_ref().preceding };
                 }
                 Some(Preceding::Parent(parent)) => {
-                    if let Some(guard) = self.upper_bound {
-                        if guard == parent {
-                            break false;
-                        }
-                    }
-
                     self.current = Some(parent);
                     self.preceding = unsafe { parent.as_ref().preceding };
                     break true;
@@ -733,7 +750,7 @@ impl<T> CursorMut<'_, T> {
     /// Returns a reference to the preceding element.
     #[must_use]
     pub fn peek_preceding(&self) -> Option<Preceding<&T>> {
-        if self.upper_bound == self.preceding.map(Preceding::unwrap) {
+        if self.upper_bound == self.preceding {
             return None;
         }
 
@@ -753,9 +770,13 @@ impl<T> CursorMut<'_, T> {
 
     /// Provides a mutable reference to the root element.
     pub fn root_mut(&mut self) -> Option<&mut T> {
-        self.tree
-            .root
-            .map(|mut r| unsafe { &mut r.as_mut().element })
+        unsafe {
+            let mut preceding_opt = self.preceding;
+            while let Some(preceding) = preceding_opt {
+                preceding_opt = preceding.unwrap().as_ref().preceding;
+            }
+            preceding_opt.map(|p|&mut p.unwrap().as_mut().element)
+        }
     }
 
     /// Get the current element.
@@ -766,7 +787,7 @@ impl<T> CursorMut<'_, T> {
 
     /// Returns an immutable cursor to all elements before the current element.
     pub fn split(&mut self) -> Cursor<T> {
-        self.upper_bound = self.preceding.map(Preceding::unwrap);
+        self.upper_bound = self.preceding;
         Cursor {
             preceding: self
                 .preceding
@@ -774,6 +795,25 @@ impl<T> CursorMut<'_, T> {
             current: self.preceding.map(Preceding::unwrap),
             tree: self.tree,
             lower_bound: self.current,
+        }
+    }
+
+    /// Joins an immutable cursor into a mutable cursor.
+    pub fn try_join(&mut self, cursor: Cursor<T>) -> Result<(), Cursor<T>> {
+        unsafe {
+            match self.upper_bound {
+                Some(Preceding::Parent(parent)) if parent.as_ref().child == cursor.lower_bound => {
+                    self.upper_bound = None;
+                    Ok(())
+                }
+                Some(Preceding::Previous(previous))
+                    if previous.as_ref().next == cursor.lower_bound =>
+                {
+                    self.upper_bound = None;
+                    Ok(())
+                }
+                _ => Err(cursor),
+            }
         }
     }
 
@@ -822,7 +862,7 @@ impl<T> CursorMut<'_, T> {
                 let pred = Some(Preceding::Previous(ptr));
                 current.as_mut().preceding = pred;
                 self.preceding = pred;
-                self.tree.root = Some(ptr);
+                self.tree.as_mut().root = Some(ptr);
             },
             (None, Some(previous)) => unsafe {
                 ptr::write(
@@ -857,7 +897,7 @@ impl<T> CursorMut<'_, T> {
                 );
                 let ptr = NonNull::new(ptr).unwrap_unchecked();
                 self.current = Some(ptr);
-                self.tree.root = Some(ptr);
+                self.tree.as_mut().root = Some(ptr);
             },
         }
     }
@@ -926,7 +966,7 @@ impl<T> CursorMut<'_, T> {
                 );
                 let ptr = NonNull::new(ptr).unwrap_unchecked();
                 self.current = Some(ptr);
-                self.tree.root = Some(ptr);
+                self.tree.as_mut().root = Some(ptr);
             },
         }
     }
@@ -995,7 +1035,7 @@ impl<T> CursorMut<'_, T> {
                 );
                 let ptr = NonNull::new(ptr).unwrap_unchecked();
                 self.current = Some(ptr);
-                self.tree.root = Some(ptr);
+                self.tree.as_mut().root = Some(ptr);
             },
         }
     }
@@ -1038,7 +1078,7 @@ impl<T> CursorMut<'_, T> {
             },
             (Some(current), None) => unsafe {
                 self.current = current.as_ref().next;
-                self.tree.root = current.as_ref().next;
+                self.tree.as_mut().root = current.as_ref().next;
                 if let Some(mut next) = current.as_ref().next {
                     next.as_mut().preceding = None;
                 }
