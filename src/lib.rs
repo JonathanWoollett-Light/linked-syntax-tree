@@ -352,7 +352,7 @@ impl<T> Cursor<T> {
             while let Some(preceding) = preceding_opt {
                 preceding_opt = preceding.unwrap().as_ref().preceding;
             }
-            preceding_opt.map(|p|&p.unwrap().as_ref().element)
+            preceding_opt.map(|p| &p.unwrap().as_ref().element)
         }
     }
 
@@ -548,6 +548,11 @@ impl<T> CursorMut<T> {
         self.current = current;
     }
 
+    /// Sets the `upper_bound` member.
+    pub fn set_upper_bound(&mut self, upper_bound: Option<NodePredecessor<T>>) {
+        self.upper_bound = upper_bound;
+    }
+
     /// Gets the `preceding` member.
     #[must_use]
     pub fn get_preceding(&self) -> &Option<NodePredecessor<T>> {
@@ -597,8 +602,8 @@ impl<T> CursorMut<T> {
                     while let Some(preceding) = preceding_opt {
                         preceding_opt = preceding.unwrap().as_ref().preceding;
                     }
-                    preceding_opt.map(|p|&p.unwrap().as_ref().element)
-                },
+                    preceding_opt.map(|p| &p.unwrap().as_ref().element)
+                }
             }
         }
     }
@@ -775,7 +780,7 @@ impl<T> CursorMut<T> {
             while let Some(preceding) = preceding_opt {
                 preceding_opt = preceding.unwrap().as_ref().preceding;
             }
-            preceding_opt.map(|p|&mut p.unwrap().as_mut().element)
+            preceding_opt.map(|p| &mut p.unwrap().as_mut().element)
         }
     }
 
