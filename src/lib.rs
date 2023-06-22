@@ -284,7 +284,8 @@ pub struct Element<T> {
 pub struct Cursor<'a, T> {
     preceding: Option<NodePredecessor<T>>,
     current: Option<NonNull<Node<T>>>,
-    tree: &'a SyntaxTree<T>,
+    /// The underlying [`SyntaxTree`].
+    pub tree: &'a SyntaxTree<T>,
 }
 impl<'a, T> Clone for Cursor<'a, T> {
     fn clone(&self) -> Self {
@@ -515,7 +516,8 @@ impl<'a, T> std::ops::DerefMut for CursorMut<'a, T> {
 pub struct CursorMut<'a, T> {
     preceding: Option<NodePredecessor<T>>,
     current: Option<NonNull<Node<T>>>,
-    tree: &'a mut SyntaxTree<T>,
+    /// The underlying [`SyntaxTree`].
+    pub tree: &'a mut SyntaxTree<T>,
 }
 
 impl<T> CursorMut<'_, T> {
