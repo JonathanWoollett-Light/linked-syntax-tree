@@ -975,6 +975,7 @@ impl<'a, T> CursorMut<'a, T> {
                     }
                     current.as_mut().next = Some(child);
                     child.as_mut().preceding = Some(Preceding::Previous(current));
+                    current.as_mut().child = None;
                 }
             }
         }
