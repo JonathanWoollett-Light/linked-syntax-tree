@@ -41,7 +41,7 @@
 //! which can be constructed with:
 //! ```rust
 //! # use linked_syntax_tree::*;
-//! let mut root = OptionalNode::default();
+//! let mut root = SyntaxTree::default();
 //! let mut cursor = root.cursor_mut();
 //! cursor.insert_next("x = -10"); // Inserts "x = -10" as the root element.
 //! cursor.insert_next("loop"); // Inserts "loop" as the next element.
@@ -85,21 +85,24 @@ use std::fmt;
 use std::ptr;
 use std::ptr::NonNull;
 
-/// An optional tree node for a doubly linked syntax tree.
+/// A doubly linked syntax tree.
 #[derive(Debug)]
-pub struct OptionalNode<T>(Option<NonNull<Node<T>>>);
+pub struct SyntaxTree<T>(OptionalNode<T>);
 
-impl<T> PartialEq for OptionalNode<T> {
+type OptionalNode<T> = Option<NonNull<Node<T>>>;
+type NodePredecessor<T> = Preceding<NonNull<Node<T>>>;
+
+impl<T> PartialEq for SyntaxTree<T> {
     fn eq(&self, other: &Self) -> bool {
         self.0 == other.0
     }
 }
-impl<T> Eq for OptionalNode<T> {}
+impl<T> Eq for SyntaxTree<T> {}
 
-/// The string used for depth in the [`OptionalNode`] [`std::fmt::Display`] implementation.
+/// The string used for depth in the [`SyntaxTree`] [`std::fmt::Display`] implementation.
 pub const INDENT: &str = "    ";
 
-impl<T: fmt::Display> fmt::Display for OptionalNode<T> {
+impl<T: fmt::Display> fmt::Display for SyntaxTree<T> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         for Element { item, depth } in self.iter() {
             writeln!(f, "{}{item}", INDENT.repeat(depth))?;
@@ -108,17 +111,15 @@ impl<T: fmt::Display> fmt::Display for OptionalNode<T> {
     }
 }
 
-type NodePredecessor<T> = Preceding<NonNull<Node<T>>>;
-
-impl<T> OptionalNode<T> {
+impl<T> SyntaxTree<T> {
     /// Provides a cursor at the front element.
     #[must_use]
     pub fn cursor(&self) -> Cursor<T> {
         Cursor {
             preceding: None,
-            current: OptionalNode(self.0.clone()),
-            root: self,
-            succeeding_bound: OptionalNode(None),
+            current: self.0.clone(),
+            root: &self.0,
+            succeeding_bound: None,
         }
     }
 
@@ -126,8 +127,8 @@ impl<T> OptionalNode<T> {
     pub fn cursor_mut(&mut self) -> CursorMut<T> {
         CursorMut {
             preceding: None,
-            current: OptionalNode(self.0.clone()),
-            root: self,
+            current: self.0.clone(),
+            root: &mut self.0,
         }
     }
 
@@ -172,12 +173,12 @@ impl<T> OptionalNode<T> {
         }
     }
 }
-impl<T> Default for OptionalNode<T> {
+impl<T> Default for SyntaxTree<T> {
     fn default() -> Self {
         Self(None)
     }
 }
-impl<T: Clone> Clone for OptionalNode<T> {
+impl<T: Clone> Clone for SyntaxTree<T> {
     fn clone(&self) -> Self {
         if let Some(root) = self.0 {
             unsafe {
@@ -220,7 +221,7 @@ impl<T: Clone> Clone for OptionalNode<T> {
         }
     }
 }
-impl<T> From<T> for OptionalNode<T> {
+impl<T> From<T> for SyntaxTree<T> {
     fn from(element: T) -> Self {
         let ptr = unsafe {
             let ptr = alloc::alloc(alloc::Layout::new::<Node<T>>()).cast();
@@ -238,12 +239,31 @@ impl<T> From<T> for OptionalNode<T> {
         Self(Some(ptr))
     }
 }
+impl<T> Drop for SyntaxTree<T> {
+    fn drop(&mut self) {
+        if let Some(current) = self.0 {
+            let mut stack = vec![current];
+            // Deallocate all child nodes of the old current node.
+            unsafe {
+                while let Some(next) = stack.pop() {
+                    if let Some(child) = next.as_ref().child {
+                        stack.push(child);
+                    }
+                    if let Some(next) = next.as_ref().next {
+                        stack.push(next);
+                    }
+                    alloc::dealloc(next.as_ptr().cast(), alloc::Layout::new::<Node<T>>());
+                }
+            }
+        }
+    }
+}
 
 /// Iterates through elements depth-first in a [`OptionalNode`] returning references.
 #[derive(Debug)]
 pub struct Iter<'a, T> {
     stack: Vec<(NonNull<Node<T>>, usize)>,
-    __marker: &'a OptionalNode<T>,
+    __marker: &'a SyntaxTree<T>,
 }
 impl<'a, T> Iterator for Iter<'a, T> {
     type Item = Element<&'a T>;
@@ -272,7 +292,7 @@ impl<'a, T> Iterator for Iter<'a, T> {
 #[derive(Debug)]
 pub struct IterMut<'a, T> {
     stack: Vec<(NonNull<Node<T>>, usize)>,
-    __marker: &'a mut OptionalNode<T>,
+    __marker: &'a mut SyntaxTree<T>,
 }
 impl<'a, T> Iterator for IterMut<'a, T> {
     type Item = Element<&'a mut T>;
@@ -323,9 +343,9 @@ impl<'a, T> Clone for Cursor<'a, T> {
     fn clone(&self) -> Self {
         Self {
             preceding: self.preceding,
-            current: OptionalNode(self.current.0.clone()),
+            current: self.current.clone(),
             root: self.root,
-            succeeding_bound: OptionalNode(self.succeeding_bound.0.clone()),
+            succeeding_bound: self.succeeding_bound.clone(),
         }
     }
 }
@@ -335,7 +355,7 @@ impl<'a, T> Cursor<'a, T> {
     /// Returns `None` if the current element is `None` or if the current element is the lower bound.
     #[must_use]
     pub fn current(&self) -> Option<&T> {
-        self.current.0.map(|ptr| unsafe { &ptr.as_ref().element })
+        self.current.map(|ptr| unsafe { &ptr.as_ref().element })
     }
 
     /// Moves the cursor to the preceding element.
@@ -343,7 +363,7 @@ impl<'a, T> Cursor<'a, T> {
     /// If there is no preceding element the cursor is not moved.
     pub fn move_preceding(&mut self) {
         if let Some(preceding) = self.preceding {
-            self.current.0 = Some(preceding.unwrap());
+            self.current = Some(preceding.unwrap());
             self.preceding = unsafe { preceding.unwrap().as_ref().preceding.as_ref().copied() };
         }
     }
@@ -352,9 +372,9 @@ impl<'a, T> Cursor<'a, T> {
     /// is within the bounds of the cursor (when splitting a mutable cursor, an immutable cursor is
     /// produced where its bound restrict it to element above the mutable cursor).
     pub fn move_next(&mut self) {
-        if let Some(current) = self.current.0 {
+        if let Some(current) = self.current {
             self.preceding = Some(Preceding::Previous(current));
-            self.current.0 = unsafe { current.as_ref().next };
+            self.current = unsafe { current.as_ref().next };
         }
     }
 
@@ -362,9 +382,9 @@ impl<'a, T> Cursor<'a, T> {
     /// is within the bounds of the cursor (when splitting a mutable cursor, an immutable cursor is
     /// produced where its bound restrict it to element above the mutable cursor).
     pub fn move_child(&mut self) {
-        if let Some(current) = self.current.0 {
+        if let Some(current) = self.current {
             self.preceding = Some(Preceding::Parent(current));
-            self.current.0 = unsafe { current.as_ref().child };
+            self.current = unsafe { current.as_ref().child };
         }
     }
 
@@ -377,11 +397,11 @@ impl<'a, T> Cursor<'a, T> {
         loop {
             match self.preceding {
                 Some(Preceding::Previous(previous)) => {
-                    self.current.0 = Some(previous);
+                    self.current = Some(previous);
                     self.preceding = unsafe { previous.as_ref().preceding };
                 }
                 Some(Preceding::Parent(parent)) => {
-                    self.current.0 = Some(parent);
+                    self.current = Some(parent);
                     self.preceding = unsafe { parent.as_ref().preceding };
                     break true;
                 }
@@ -439,7 +459,7 @@ impl<'a, T> Cursor<'a, T> {
     /// Returns a reference to the next element.
     #[must_use]
     pub fn peek_next(&self) -> Option<&T> {
-        if let Some(current) = self.current.0 {
+        if let Some(current) = self.current {
             unsafe { current.as_ref().next.map(|n| &n.as_ref().element) }
         } else {
             None
@@ -473,7 +493,7 @@ impl<'a, T> Cursor<'a, T> {
     /// Returns a reference to the child element.
     #[must_use]
     pub fn peek_child(&self) -> Option<&T> {
-        if let Some(current) = self.current.0 {
+        if let Some(current) = self.current {
             unsafe { current.as_ref().child.map(|n| &n.as_ref().element) }
         } else {
             None
@@ -484,7 +504,7 @@ impl<'a, T> Cursor<'a, T> {
 /// Roughly matches [`std::collections::linked_list::CursorMut`].
 #[derive(Debug)]
 pub struct CursorMut<'a, T> {
-    /// The preceeding element, mutably accessing this is unsafe.
+    /// The preceding element, mutably accessing this is unsafe.
     pub preceding: Option<NodePredecessor<T>>,
     /// The current element, mutably accessing this is unsafe.
     pub current: OptionalNode<T>,
@@ -492,18 +512,38 @@ pub struct CursorMut<'a, T> {
     pub root: &'a mut OptionalNode<T>,
 }
 impl<'a, T> CursorMut<'a, T> {
+    /// Gets a syntax tree where the root is the current node.
+    pub fn subtree(&self) -> &SyntaxTree<T> {
+        unsafe { std::mem::transmute(&self.current) }
+    }
+
+    /// Splits the tree at the current element.
+    pub fn split_next(&mut self) -> OptionalNode<T> {
+        match self.current {
+            Some(mut current) => unsafe {
+                if let Some(next) = current.as_ref().next {
+                    current.as_mut().next = None;
+                    Some(next)
+                } else {
+                    None
+                }
+            },
+            None => None,
+        }
+    }
+
     /// Splits the cursor at the current element, where the returned mutable cursor points to the
     /// current element and the return immutable cursor points to the preceding element.
     pub fn split(&mut self) -> (CursorMut<'_, T>, Cursor<'_, T>) {
         let cursor = Cursor {
-            preceding: self.current.0.and_then(|c| unsafe { c.as_ref().preceding }),
-            current: OptionalNode(self.preceding.map(Preceding::unwrap)),
+            preceding: self.current.and_then(|c| unsafe { c.as_ref().preceding }),
+            current: self.preceding.map(Preceding::unwrap),
             root: &self.root,
-            succeeding_bound: OptionalNode(self.preceding.map(Preceding::unwrap)),
+            succeeding_bound: self.preceding.map(Preceding::unwrap),
         };
         let mutable_cursor = CursorMut {
             preceding: self.preceding,
-            current: OptionalNode(self.current.0.clone()),
+            current: self.current.clone(),
             root: &mut self.current,
         };
         (mutable_cursor, cursor)
@@ -514,7 +554,7 @@ impl<'a, T> CursorMut<'a, T> {
     /// Returns `None` if the current element is `None` or if the current element is the lower bound.
     #[must_use]
     pub fn current(&self) -> Option<&T> {
-        self.current.0.map(|ptr| unsafe { &ptr.as_ref().element })
+        self.current.map(|ptr| unsafe { &ptr.as_ref().element })
     }
 
     /// Moves the cursor to the preceding element.
@@ -524,7 +564,7 @@ impl<'a, T> CursorMut<'a, T> {
         if self.current == *self.root {
             return;
         }
-        self.current.0 = self.preceding.map(Preceding::unwrap);
+        self.current = self.preceding.map(Preceding::unwrap);
         self.preceding = self
             .preceding
             .and_then(|p| unsafe { p.unwrap().as_ref().preceding });
@@ -532,17 +572,17 @@ impl<'a, T> CursorMut<'a, T> {
 
     /// Moves the cursor to the next element.
     pub fn move_next(&mut self) {
-        if let Some(current) = self.current.0 {
+        if let Some(current) = self.current {
             self.preceding = Some(Preceding::Previous(current));
-            self.current.0 = unsafe { current.as_ref().next };
+            self.current = unsafe { current.as_ref().next };
         }
     }
 
     /// Moves the cursor to the child element.
     pub fn move_child(&mut self) {
-        if let Some(current) = self.current.0 {
+        if let Some(current) = self.current {
             self.preceding = Some(Preceding::Parent(current));
-            self.current.0 = unsafe { current.as_ref().child };
+            self.current = unsafe { current.as_ref().child };
         }
     }
 
@@ -559,11 +599,11 @@ impl<'a, T> CursorMut<'a, T> {
 
             match self.preceding {
                 Some(Preceding::Previous(previous)) => {
-                    self.current = OptionalNode(Some(previous));
+                    self.current = Some(previous);
                     self.preceding = unsafe { previous.as_ref().preceding };
                 }
                 Some(Preceding::Parent(parent)) => {
-                    self.current = OptionalNode(Some(parent));
+                    self.current = Some(parent);
                     self.preceding = unsafe { parent.as_ref().preceding };
                     break true;
                 }
@@ -621,7 +661,7 @@ impl<'a, T> CursorMut<'a, T> {
     /// Returns a reference to the next element.
     #[must_use]
     pub fn peek_next(&self) -> Option<&T> {
-        if let Some(current) = self.current.0 {
+        if let Some(current) = self.current {
             unsafe { current.as_ref().next.map(|n| &n.as_ref().element) }
         } else {
             None
@@ -659,7 +699,7 @@ impl<'a, T> CursorMut<'a, T> {
     /// Returns a reference to the child element.
     #[must_use]
     pub fn peek_child(&self) -> Option<&T> {
-        if let Some(current) = self.current.0 {
+        if let Some(current) = self.current {
             unsafe { current.as_ref().child.map(|n| &n.as_ref().element) }
         } else {
             None
@@ -669,7 +709,6 @@ impl<'a, T> CursorMut<'a, T> {
     /// Get the current element.
     pub fn current_mut(&mut self) -> Option<&mut T> {
         self.current
-            .0
             .map(|mut ptr| unsafe { &mut ptr.as_mut().element })
     }
 
@@ -680,7 +719,7 @@ impl<'a, T> CursorMut<'a, T> {
     /// If the cursor has `None` current element it is set to the inserted element.
     pub fn insert_preceding(&mut self, item: T) {
         let ptr = unsafe { alloc::alloc(alloc::Layout::new::<Node<T>>()).cast::<Node<T>>() };
-        match (self.current.0, self.preceding) {
+        match (self.current, self.preceding) {
             (Some(mut current), Some(previous)) => unsafe {
                 ptr::write(
                     ptr,
@@ -718,7 +757,7 @@ impl<'a, T> CursorMut<'a, T> {
                 let pred = Some(Preceding::Previous(ptr));
                 current.as_mut().preceding = pred;
                 self.preceding = pred;
-                self.root.0 = Some(ptr);
+                *self.root = Some(ptr);
             },
             (None, Some(previous)) => unsafe {
                 ptr::write(
@@ -739,7 +778,7 @@ impl<'a, T> CursorMut<'a, T> {
                         previous.as_mut().next = Some(ptr);
                     }
                 }
-                self.current.0 = Some(ptr);
+                self.current = Some(ptr);
             },
             (None, None) => unsafe {
                 ptr::write(
@@ -752,8 +791,8 @@ impl<'a, T> CursorMut<'a, T> {
                     },
                 );
                 let ptr = NonNull::new(ptr).unwrap_unchecked();
-                self.current.0 = Some(ptr);
-                self.root.0 = Some(ptr);
+                self.current = Some(ptr);
+                *self.root = Some(ptr);
             },
         }
     }
@@ -763,7 +802,7 @@ impl<'a, T> CursorMut<'a, T> {
     /// If the cursor has `None` current element it is set to the inserted element.
     pub fn insert_next(&mut self, item: T) {
         let ptr = unsafe { alloc::alloc(alloc::Layout::new::<Node<T>>()).cast::<Node<T>>() };
-        match (self.current.0, self.preceding) {
+        match (self.current, self.preceding) {
             (Some(mut current), _) => unsafe {
                 ptr::write(
                     ptr,
@@ -793,7 +832,7 @@ impl<'a, T> CursorMut<'a, T> {
                     );
                     let ptr = NonNull::new(ptr).unwrap_unchecked();
                     parent.as_mut().child = Some(ptr);
-                    self.current.0 = Some(ptr);
+                    self.current = Some(ptr);
                 },
                 Preceding::Previous(mut previous) => unsafe {
                     ptr::write(
@@ -807,7 +846,7 @@ impl<'a, T> CursorMut<'a, T> {
                     );
                     let ptr = NonNull::new(ptr).unwrap_unchecked();
                     previous.as_mut().next = Some(ptr);
-                    self.current.0 = Some(ptr);
+                    self.current = Some(ptr);
                 },
             },
             (None, None) => unsafe {
@@ -821,8 +860,8 @@ impl<'a, T> CursorMut<'a, T> {
                     },
                 );
                 let ptr = NonNull::new(ptr).unwrap_unchecked();
-                self.current.0 = Some(ptr);
-                self.root.0 = Some(ptr);
+                self.current = Some(ptr);
+                *self.root = Some(ptr);
             },
         }
     }
@@ -832,7 +871,7 @@ impl<'a, T> CursorMut<'a, T> {
     /// If the cursor has `None` current element it is set to the inserted element.
     pub fn insert_child(&mut self, item: T) {
         let ptr = unsafe { alloc::alloc(alloc::Layout::new::<Node<T>>()).cast::<Node<T>>() };
-        match (self.current.0, self.preceding) {
+        match (self.current, self.preceding) {
             (Some(mut current), _) => unsafe {
                 ptr::write(
                     ptr,
@@ -862,7 +901,7 @@ impl<'a, T> CursorMut<'a, T> {
                     );
                     let ptr = NonNull::new(ptr).unwrap_unchecked();
                     parent.as_mut().child = Some(ptr);
-                    self.current.0 = Some(ptr);
+                    self.current = Some(ptr);
                 },
                 Preceding::Previous(mut previous) => unsafe {
                     ptr::write(
@@ -876,7 +915,7 @@ impl<'a, T> CursorMut<'a, T> {
                     );
                     let ptr = NonNull::new(ptr).unwrap_unchecked();
                     previous.as_mut().next = Some(ptr);
-                    self.current.0 = Some(ptr);
+                    self.current = Some(ptr);
                 },
             },
             (None, None) => unsafe {
@@ -890,8 +929,8 @@ impl<'a, T> CursorMut<'a, T> {
                     },
                 );
                 let ptr = NonNull::new(ptr).unwrap_unchecked();
-                self.current.0 = Some(ptr);
-                self.root.0 = Some(ptr);
+                self.current = Some(ptr);
+                *self.root = Some(ptr);
             },
         }
     }
@@ -900,9 +939,9 @@ impl<'a, T> CursorMut<'a, T> {
     ///
     /// When removing a node with a child node, this child node is removed.
     pub fn remove_current(&mut self) {
-        match (self.current.0, self.preceding) {
+        match (self.current, self.preceding) {
             (Some(current), Some(preceding)) => unsafe {
-                self.current.0 = current.as_ref().next;
+                self.current = current.as_ref().next;
                 match preceding {
                     Preceding::Parent(mut parent) => {
                         parent.as_mut().child = current.as_ref().next;
@@ -933,8 +972,8 @@ impl<'a, T> CursorMut<'a, T> {
                 alloc::dealloc(current.as_ptr().cast(), alloc::Layout::new::<Node<T>>());
             },
             (Some(current), None) => unsafe {
-                self.current.0 = current.as_ref().next;
-                self.root.0 = current.as_ref().next;
+                self.current = current.as_ref().next;
+                *self.root = current.as_ref().next;
                 if let Some(mut next) = current.as_ref().next {
                     next.as_mut().preceding = None;
                 }
@@ -963,7 +1002,7 @@ impl<'a, T> CursorMut<'a, T> {
     /// Moves the children of the current element to next elements.
     pub fn flatten(&mut self) {
         unsafe {
-            if let Some(mut current) = self.current.0 {
+            if let Some(mut current) = self.current {
                 if let Some(mut child) = current.as_ref().child {
                     let mut last_child = child;
                     while let Some(next_child) = last_child.as_ref().next {
@@ -979,20 +1018,6 @@ impl<'a, T> CursorMut<'a, T> {
                 }
             }
         }
-    }
-}
-
-/// A relationship between an element its preceding element.
-#[derive(Debug)]
-pub enum Relationship {
-    /// The preceding element is its previous element.
-    Previous,
-    /// The preceding element is its parent element.
-    Parent,
-}
-impl Default for Relationship {
-    fn default() -> Self {
-        Self::Previous
     }
 }
 
@@ -1119,7 +1144,7 @@ mod tests {
 
     #[test]
     fn display() {
-        let mut tree = OptionalNode::<u8>::default();
+        let mut tree = SyntaxTree::<u8>::default();
         let mut cursor = tree.cursor_mut();
         assert_eq!(cursor.peek_preceding(), None);
         assert_eq!(cursor.current(), None);
@@ -1237,7 +1262,7 @@ mod tests {
 
     #[test]
     fn insert_preceding() {
-        let mut tree = OptionalNode::<u8>::default();
+        let mut tree = SyntaxTree::<u8>::default();
         let mut cursor = tree.cursor_mut();
         assert_eq!(cursor.peek_preceding(), None);
         assert_eq!(cursor.current(), None);
@@ -1316,7 +1341,7 @@ mod tests {
 
     #[test]
     fn insert_next() {
-        let mut tree = OptionalNode::<u8>::default();
+        let mut tree = SyntaxTree::<u8>::default();
         let mut cursor = tree.cursor_mut();
         assert_eq!(cursor.peek_preceding(), None);
         assert_eq!(cursor.current(), None);
@@ -1400,7 +1425,7 @@ mod tests {
 
     #[test]
     fn remove() {
-        let mut tree = OptionalNode::<u8>::default();
+        let mut tree = SyntaxTree::<u8>::default();
         let mut cursor = tree.cursor_mut();
         assert_eq!(cursor.peek_preceding(), None);
         assert_eq!(cursor.current(), None);
@@ -1454,7 +1479,7 @@ mod tests {
 
     #[test]
     fn clone() {
-        let mut tree = OptionalNode::<u8>::default();
+        let mut tree = SyntaxTree::<u8>::default();
         let mut cursor = tree.cursor_mut();
         cursor.insert_next(1);
         cursor.insert_preceding(2);
@@ -1468,7 +1493,7 @@ mod tests {
 
     #[test]
     fn indexing() {
-        let mut tree = OptionalNode::<u8>::default();
+        let mut tree = SyntaxTree::<u8>::default();
         let mut iter = tree.iter();
         assert_eq!(iter.next(), None);
         assert_eq!(iter.next(), None);
@@ -1521,7 +1546,7 @@ mod tests {
 
     #[test]
     fn move_parent() {
-        let mut tree_one = OptionalNode::<u8>::default();
+        let mut tree_one = SyntaxTree::<u8>::default();
         let mut cursor = tree_one.cursor_mut();
         assert_eq!(cursor.peek_preceding(), None);
         assert_eq!(cursor.current(), None);
