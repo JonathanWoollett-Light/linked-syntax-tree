@@ -117,7 +117,7 @@ impl<T> SyntaxTree<T> {
     pub fn cursor(&self) -> Cursor<T> {
         Cursor {
             preceding: None,
-            current: self.0.clone(),
+            current: self.0,
             root: &self.0,
             succeeding_bound: None,
         }
@@ -127,7 +127,7 @@ impl<T> SyntaxTree<T> {
     pub fn cursor_mut(&mut self) -> CursorMut<T> {
         CursorMut {
             preceding: None,
-            current: self.0.clone(),
+            current: self.0,
             root: &mut self.0,
         }
     }
@@ -326,6 +326,292 @@ pub struct Element<T> {
     pub depth: usize,
 }
 
+/// A cursor which can be used to mutate element, but only in such a way that it does not remove
+/// elements in `self.guarded_nodes`. This allows for a semi-mutable cursor on the upper portion of
+/// a syntax tree while maintaining a mutable cursor on the lower portion.
+#[derive(Debug)]
+pub struct RestrictedCursor<'a, T> {
+    /// The preceding element, mutably accessing this is unsafe.
+    pub preceding: Option<NodePredecessor<T>>,
+    /// The current element, mutably accessing this is unsafe.
+    pub current: OptionalNode<T>,
+    /// The current root element, mutably accessing this is unsafe.
+    pub root: &'a mut OptionalNode<T>,
+    /// The set of nodes which cannot be removed, mutably accessing this is unsafe.
+    pub guarded_nodes: Vec<NonNull<Node<T>>>,
+}
+impl<'a, T> From<RestrictedCursor<'a, T>> for Cursor<'a, T> {
+    fn from(cursor: RestrictedCursor<'a, T>) -> Cursor<'a, T> {
+        Cursor {
+            preceding: cursor.preceding,
+            current: cursor.current,
+            root: cursor.root,
+            succeeding_bound: cursor.guarded_nodes.first().copied(),
+        }
+    }
+}
+impl<'a, T> RestrictedCursor<'a, T> {
+    /// Get the current element.
+    ///
+    /// Returns `None` if the current element is `None` or if the current element is the lower bound.
+    #[must_use]
+    pub fn current(&self) -> Option<&T> {
+        self.current.map(|ptr| unsafe { &ptr.as_ref().element })
+    }
+
+    /// Moves the cursor to the preceding element.
+    ///
+    /// If there is no preceding element the cursor is not moved.
+    pub fn move_preceding(&mut self) {
+        if let Some(preceding) = self.preceding {
+            // If we move to a parent node, we add this parent to the guarded nodes to specify that
+            // it cannot be removed (removing it would remove its children which would remove nodes
+            // borrowed by a mutable cursor).
+            if let Preceding::Parent(parent) = preceding {
+                self.guarded_nodes.push(parent);
+            }
+            self.current = Some(preceding.unwrap());
+            self.preceding = unsafe { preceding.unwrap().as_ref().preceding.as_ref().copied() };
+        }
+    }
+
+    /// Moves the cursor to the next element if there is some current element and the next element
+    /// is within the bounds of the cursor (when splitting a mutable cursor, an immutable cursor is
+    /// produced where its bound restrict it to element above the mutable cursor).
+    pub fn move_next(&mut self) {
+        if let Some(current) = self.current {
+            // We cannot move past the 1st guarded node (as all nodes past this are borrowed by a
+            // mutable cursor).
+            if Some(current) == self.guarded_nodes.first().copied() {
+                return;
+            }
+            self.preceding = Some(Preceding::Previous(current));
+            self.current = unsafe { current.as_ref().next };
+        }
+    }
+
+    /// Moves the cursor to the child element if there is some current element and the child element
+    /// is within the bounds of the cursor (when splitting a mutable cursor, an immutable cursor is
+    /// produced where its bound restrict it to element above the mutable cursor).
+    pub fn move_child(&mut self) {
+        if let Some(current) = self.current {
+            // We can pop the latest parent node from the guarded nodes.
+            self.guarded_nodes.pop();
+
+            self.preceding = Some(Preceding::Parent(current));
+            self.current = unsafe { current.as_ref().child };
+        }
+    }
+
+    /// Moves the cursor through preceding elements until reaching a parent or
+    /// the root element.
+    ///
+    /// Returns `true` if the cursor was moved to a parent or `false` if it was moved to the root
+    /// element.
+    pub fn move_parent(&mut self) -> bool {
+        loop {
+            match self.preceding {
+                Some(Preceding::Previous(previous)) => {
+                    self.current = Some(previous);
+                    self.preceding = unsafe { previous.as_ref().preceding };
+                }
+                Some(Preceding::Parent(parent)) => {
+                    // If we move to a parent node, we add this parent to the guarded nodes to specify that
+                    // it cannot be removed (removing it would remove its children which would remove nodes
+                    // borrowed by a mutable cursor).
+                    self.guarded_nodes.push(parent);
+
+                    self.current = Some(parent);
+                    self.preceding = unsafe { parent.as_ref().preceding };
+                    break true;
+                }
+                None => break false,
+            }
+        }
+    }
+
+    /// Moves the cursor to the successor element or the root element if a successor is not present.
+    ///
+    /// Returns `true` if the cursor was moved to a successor or `false` if it was moved to the root
+    /// element.
+    pub fn move_successor(&mut self) -> bool {
+        if self.peek_child().is_some() {
+            self.move_child();
+            true
+        } else if self.peek_next().is_some() {
+            self.move_next();
+            true
+        } else {
+            let parent = self.move_parent();
+            let cond = parent && self.peek_next().is_some();
+            if cond {
+                self.move_next();
+            }
+            cond
+        }
+    }
+
+    /// Moves the cursor to the predecessor element or the root element if a predecessor is not
+    /// present.
+    ///
+    /// Returns `true` if the cursor was moved to a predecessor or `false` if it was moved to the
+    /// root element.
+    pub fn move_predecessor(&mut self) -> bool {
+        match self.peek_preceding() {
+            Some(Preceding::Parent(_)) => {
+                self.move_preceding();
+                true
+            }
+            Some(Preceding::Previous(_)) => {
+                self.move_preceding();
+                while self.peek_child().is_some() {
+                    self.move_child();
+                    while self.peek_next().is_some() {
+                        self.move_next();
+                    }
+                }
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// Returns a reference to the next element.
+    #[must_use]
+    pub fn peek_next(&self) -> Option<&T> {
+        if let Some(current) = self.current {
+            // We cannot obtain a reference to the next node after the first guarded node as this
+            // would be a reference to a node which a mutable cursor could have a mutable reference
+            // to (and thus could remove invalidating our reference here).
+            if Some(current) == self.guarded_nodes.first().copied() {
+                return None;
+            }
+
+            unsafe { current.as_ref().next.map(|n| &n.as_ref().element) }
+        } else {
+            None
+        }
+    }
+
+    /// Returns a reference to the parent element.
+    ///
+    /// Wrapper around `self.peek_preceding().and_then(Preceding::parent)`.
+    #[must_use]
+    pub fn peek_parent(&self) -> Option<&T> {
+        self.peek_preceding().and_then(Preceding::parent)
+    }
+
+    /// Returns a reference to the previous element.
+    ///
+    /// Wrapper around `self.peek_preceding().and_then(Preceding::previous)`
+    /// .
+    #[must_use]
+    pub fn peek_previous(&self) -> Option<&T> {
+        self.peek_preceding().and_then(Preceding::previous)
+    }
+
+    /// Returns a reference to the preceding element.
+    #[must_use]
+    pub fn peek_preceding(&self) -> Option<Preceding<&T>> {
+        self.preceding
+            .map(|p| unsafe { p.map(|p| &p.as_ref().element) })
+    }
+
+    /// Returns a reference to the child element.
+    #[must_use]
+    pub fn peek_child(&self) -> Option<&T> {
+        if let Some(current) = self.current {
+            // We cannot obtain a reference to the next node after the first guarded node as this
+            // would be a reference to a node which a mutable cursor could have a mutable reference
+            // to (and thus could remove invalidating our reference here).
+            if Some(current) == self.guarded_nodes.first().copied() {
+                return None;
+            }
+
+            unsafe { current.as_ref().child.map(|n| &n.as_ref().element) }
+        } else {
+            None
+        }
+    }
+
+    /// Get the current element.
+    pub fn current_mut(&mut self) -> Option<&mut T> {
+        self.current
+            .map(|mut ptr| unsafe { &mut ptr.as_mut().element })
+    }
+
+    /// Removes the current node.
+    ///
+    /// When removing a node with a child node, this child node is removed.
+    pub fn remove_current(&mut self) {
+        // We cannot remove the last guarded node, as this node is the n'th parent of the 1st
+        // guarded node which is the preceding node of the root node of a mutable cursor. In this
+        // case removing this node would deallocate nodes borrowed by the mutable cursor.
+        if self.current == self.guarded_nodes.last().copied() {
+            return;
+        }
+
+        match (self.current, self.preceding) {
+            (Some(current), Some(preceding)) => unsafe {
+                self.current = current.as_ref().next;
+                match preceding {
+                    Preceding::Parent(mut parent) => {
+                        parent.as_mut().child = current.as_ref().next;
+                    }
+                    Preceding::Previous(mut previous) => {
+                        previous.as_mut().next = current.as_ref().next;
+                    }
+                }
+                if let Some(mut next) = current.as_ref().next {
+                    next.as_mut().preceding = Some(preceding);
+                }
+
+                // Deallocate all child nodes of the old current node.
+                if let Some(child) = current.as_ref().child {
+                    // TODO This will never be greater than 2 elements, do something more
+                    // performant.
+                    let mut stack = vec![child];
+                    while let Some(next) = stack.pop() {
+                        if let Some(child) = next.as_ref().child {
+                            stack.push(child);
+                        }
+                        if let Some(next) = next.as_ref().next {
+                            stack.push(next);
+                        }
+                        alloc::dealloc(next.as_ptr().cast(), alloc::Layout::new::<Node<T>>());
+                    }
+                }
+                alloc::dealloc(current.as_ptr().cast(), alloc::Layout::new::<Node<T>>());
+            },
+            (Some(current), None) => unsafe {
+                self.current = current.as_ref().next;
+                *self.root = current.as_ref().next;
+                if let Some(mut next) = current.as_ref().next {
+                    next.as_mut().preceding = None;
+                }
+
+                // Deallocate all child nodes of the old current node.
+                if let Some(child) = current.as_ref().child {
+                    // TODO This will never be greater than 2 elements, do something more
+                    // performant.
+                    let mut stack = vec![child];
+                    while let Some(next) = stack.pop() {
+                        if let Some(child) = next.as_ref().child {
+                            stack.push(child);
+                        }
+                        if let Some(next) = next.as_ref().next {
+                            stack.push(next);
+                        }
+                        alloc::dealloc(next.as_ptr().cast(), alloc::Layout::new::<Node<T>>());
+                    }
+                }
+                alloc::dealloc(current.as_ptr().cast(), alloc::Layout::new::<Node<T>>());
+            },
+            (None, _) => {}
+        }
+    }
+}
+
 /// Roughly matches [`std::collections::linked_list::Cursor`].
 #[derive(Debug)]
 pub struct Cursor<'a, T> {
@@ -343,9 +629,9 @@ impl<'a, T> Clone for Cursor<'a, T> {
     fn clone(&self) -> Self {
         Self {
             preceding: self.preceding,
-            current: self.current.clone(),
+            current: self.current,
             root: self.root,
-            succeeding_bound: self.succeeding_bound.clone(),
+            succeeding_bound: self.succeeding_bound,
         }
     }
 }
@@ -460,6 +746,13 @@ impl<'a, T> Cursor<'a, T> {
     #[must_use]
     pub fn peek_next(&self) -> Option<&T> {
         if let Some(current) = self.current {
+            // We cannot obtain a reference to the next node after the succeeding bound node as this
+            // would be a reference to a node which a mutable cursor could have a mutable reference
+            // to (and thus could remove invalidating our reference here).
+            if Some(current) == self.succeeding_bound {
+                return None;
+            }
+
             unsafe { current.as_ref().next.map(|n| &n.as_ref().element) }
         } else {
             None
@@ -494,6 +787,13 @@ impl<'a, T> Cursor<'a, T> {
     #[must_use]
     pub fn peek_child(&self) -> Option<&T> {
         if let Some(current) = self.current {
+            // We cannot obtain a reference to the next node after the succeeding bound node as this
+            // would be a reference to a node which a mutable cursor could have a mutable reference
+            // to (and thus could remove invalidating our reference here).
+            if Some(current) == self.succeeding_bound {
+                return None;
+            }
+
             unsafe { current.as_ref().child.map(|n| &n.as_ref().element) }
         } else {
             None
@@ -513,8 +813,30 @@ pub struct CursorMut<'a, T> {
 }
 impl<'a, T> CursorMut<'a, T> {
     /// Gets a syntax tree where the root is the current node.
+    #[must_use]
     pub fn subtree(&self) -> &SyntaxTree<T> {
-        unsafe { std::mem::transmute(&self.current) }
+        unsafe { &*(std::ptr::addr_of!(self.current).cast()) }
+    }
+
+    /// Splits the cursor at the current element, where the returned mutable cursor points to the
+    /// current element and the return immutable cursor points to the preceding element.
+    pub fn split_restricted(&mut self) -> (CursorMut<'_, T>, RestrictedCursor<'_, T>) {
+        let cursor = RestrictedCursor {
+            preceding: self.current.and_then(|c| unsafe { c.as_ref().preceding }),
+            current: self.preceding.map(Preceding::unwrap),
+            root: self.root,
+            guarded_nodes: if let Some(p) = self.preceding.map(Preceding::unwrap) {
+                vec![p]
+            } else {
+                Vec::new()
+            },
+        };
+        let mutable_cursor = CursorMut {
+            preceding: self.preceding,
+            current: self.current,
+            root: &mut self.current,
+        };
+        (mutable_cursor, cursor)
     }
 
     /// Splits the tree at the current element.
@@ -538,12 +860,12 @@ impl<'a, T> CursorMut<'a, T> {
         let cursor = Cursor {
             preceding: self.current.and_then(|c| unsafe { c.as_ref().preceding }),
             current: self.preceding.map(Preceding::unwrap),
-            root: &self.root,
+            root: self.root,
             succeeding_bound: self.preceding.map(Preceding::unwrap),
         };
         let mutable_cursor = CursorMut {
             preceding: self.preceding,
-            current: self.current.clone(),
+            current: self.current,
             root: &mut self.current,
         };
         (mutable_cursor, cursor)
@@ -711,8 +1033,6 @@ impl<'a, T> CursorMut<'a, T> {
         self.current
             .map(|mut ptr| unsafe { &mut ptr.as_mut().element })
     }
-
-    // TODO Make `insert_preceding`, `insert_next`, `insert_child`, `flatten` and `remove_current` work with `self.preceding_bound`.
 
     /// Inserts an element before the current element.
     ///
