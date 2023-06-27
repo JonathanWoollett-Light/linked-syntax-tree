@@ -535,7 +535,7 @@ impl<'a, T> RestrictedCursor<'a, T> {
     }
 
     /// Get the current element.
-    pub fn current_mut(&mut self) -> Option<&mut T> {
+    pub fn current_mut(&self) -> Option<&mut T> {
         self.current
             .map(|mut ptr| unsafe { &mut ptr.as_mut().element })
     }
@@ -822,7 +822,9 @@ impl<'a, T> CursorMut<'a, T> {
     /// current element and the return immutable cursor points to the preceding element.
     pub fn split_restricted(&mut self) -> (CursorMut<'_, T>, RestrictedCursor<'_, T>) {
         let cursor = RestrictedCursor {
-            preceding: self.current.and_then(|c| unsafe { c.as_ref().preceding }),
+            preceding: self
+                .preceding
+                .and_then(|p| unsafe { p.unwrap().as_ref().preceding }),
             current: self.preceding.map(Preceding::unwrap),
             root: self.root,
             guarded_nodes: if let Some(p) = self.preceding.map(Preceding::unwrap) {
@@ -1320,7 +1322,7 @@ impl<'a, T> CursorMut<'a, T> {
     }
 
     /// Moves the children of the current element to next elements.
-    pub fn flatten(&mut self) {
+    pub fn flatten(&self) {
         unsafe {
             if let Some(mut current) = self.current {
                 if let Some(mut child) = current.as_ref().child {
