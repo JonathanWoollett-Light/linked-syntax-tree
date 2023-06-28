@@ -587,15 +587,17 @@ impl<'a, T> RestrictedCursor<'a, T> {
             .map(|mut ptr| unsafe { &mut ptr.as_mut().element })
     }
 
-    /// Removes the current node.
+    /// Removes the current node if it is not a guarded node.
     ///
-    /// When removing a node with a child node, this child node is removed.
-    pub fn remove_current(&mut self) {
+    /// When removing a node with a child node, the child node is removed.
+    ///
+    /// Returns if the node was removed.
+    pub fn remove_current(&mut self) -> bool {
         // We cannot remove the last guarded node, as this node is the n'th parent of the 1st
         // guarded node which is the preceding node of the root node of a mutable cursor. In this
         // case removing this node would deallocate nodes borrowed by the mutable cursor.
         if self.current == self.guarded_nodes.last().copied() {
-            return;
+            return false;
         }
 
         match (self.current, self.preceding) {
@@ -656,6 +658,7 @@ impl<'a, T> RestrictedCursor<'a, T> {
             },
             (None, _) => {}
         }
+        true
     }
 }
 
@@ -1377,7 +1380,7 @@ impl<'a, T> CursorMut<'a, T> {
 
     /// Removes the current node.
     ///
-    /// When removing a node with a child node, this child node is removed.
+    /// When removing a node with a child node, the child node is removed.
     pub fn remove_current(&mut self) {
         match (self.current, self.preceding) {
             (Some(current), Some(preceding)) => unsafe {
