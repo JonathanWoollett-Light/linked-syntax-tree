@@ -403,12 +403,11 @@ impl<'a, T> RestrictedCursor<'a, T> {
         }
     }
 
-    /// Moves the cursor through preceding elements until reaching a parent or
-    /// the root element.
-    ///
-    /// Returns `true` if the cursor was moved to a parent or `false` if it was moved to the root
-    /// element.
-    pub fn move_parent(&mut self) -> bool {
+    /// Moves the cursor through preceding elements until reaching a parent, if no parent is found,
+    /// the cursor is reset to its original position.
+    pub fn move_parent(&mut self) {
+        let cache_preceding = self.preceding;
+        let cache_current = self.current;
         loop {
             match self.preceding {
                 Some(Preceding::Previous(previous)) => {
@@ -423,31 +422,36 @@ impl<'a, T> RestrictedCursor<'a, T> {
 
                     self.current = Some(parent);
                     self.preceding = unsafe { parent.as_ref().preceding };
-                    break true;
+                    break;
                 }
-                None => break false,
+                None => {
+                    self.current = cache_current;
+                    self.preceding = cache_preceding;
+
+                    break;
+                }
             }
         }
     }
 
-    /// Moves the cursor to the successor element or the root element if a successor is not present.
-    ///
-    /// Returns `true` if the cursor was moved to a successor or `false` if it was moved to the root
-    /// element.
-    pub fn move_successor(&mut self) -> bool {
+    /// Moves the cursor to the successor element if one can be found. If there is no predecessor
+    /// element the cursor is reset to its original position and is not moved.
+    pub fn move_successor(&mut self) {
         if self.peek_child().is_some() {
             self.move_child();
-            true
         } else if self.peek_next().is_some() {
             self.move_next();
-            true
         } else {
-            let parent = self.move_parent();
-            let cond = parent && self.peek_next().is_some();
-            if cond {
-                self.move_next();
+            self.move_parent();
+
+            // If the element has a parent and the cursor was moved to it.
+            if self.current != self.current {
+                if self.peek_child().is_some() {
+                    self.move_child();
+                } else if self.peek_next().is_some() {
+                    self.move_next();
+                }
             }
-            cond
         }
     }
 
