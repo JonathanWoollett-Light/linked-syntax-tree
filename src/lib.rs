@@ -362,16 +362,22 @@ impl<'a, T> RestrictedCursor<'a, T> {
     /// Moves the cursor to the preceding element.
     ///
     /// If there is no preceding element the cursor is not moved.
-    pub fn move_preceding(&mut self) {
-        if let Some(preceding) = self.preceding {
+    pub fn move_preceding(&mut self) -> bool {
+        if self.current == *self.root {
+            false
+        } else if let Some(preceding) = self.preceding {
             // If we move to a parent node, we add this parent to the guarded nodes to specify that
             // it cannot be removed (removing it would remove its children which would remove nodes
             // borrowed by a mutable cursor).
             if let Preceding::Parent(parent) = preceding {
                 self.guarded_nodes.push(parent);
             }
+
             self.current = Some(preceding.unwrap());
             self.preceding = unsafe { preceding.unwrap().as_ref().preceding.as_ref().copied() };
+            true
+        } else {
+            false
         }
     }
 
@@ -667,10 +673,15 @@ impl<'a, T> Cursor<'a, T> {
     /// Moves the cursor to the preceding element.
     ///
     /// If there is no preceding element the cursor is not moved.
-    pub fn move_preceding(&mut self) {
-        if let Some(preceding) = self.preceding {
+    pub fn move_preceding(&mut self) -> bool {
+        if self.current == *self.root {
+            false
+        } else if let Some(preceding) = self.preceding {
             self.current = Some(preceding.unwrap());
             self.preceding = unsafe { preceding.unwrap().as_ref().preceding.as_ref().copied() };
+            true
+        } else {
+            false
         }
     }
 
@@ -924,14 +935,16 @@ impl<'a, T> CursorMut<'a, T> {
     /// Moves the cursor to the preceding element.
     ///
     /// If there is no preceding element or the cursor is at its `preceding_bound` it doesn't move.
-    pub fn move_preceding(&mut self) {
+    pub fn move_preceding(&mut self) -> bool {
         if self.current == *self.root {
-            return;
+            false
+        } else if let Some(preceding) = self.preceding {
+            self.current = Some(preceding.unwrap());
+            self.preceding = unsafe { preceding.unwrap().as_ref().preceding.as_ref().copied() };
+            true
+        } else {
+            false
         }
-        self.current = self.preceding.map(Preceding::unwrap);
-        self.preceding = self
-            .preceding
-            .and_then(|p| unsafe { p.unwrap().as_ref().preceding });
     }
 
     /// Moves the cursor to the next element.
