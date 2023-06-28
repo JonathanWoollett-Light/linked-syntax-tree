@@ -359,6 +359,27 @@ impl<'a, T> RestrictedCursor<'a, T> {
         self.current.map(|ptr| unsafe { &ptr.as_ref().element })
     }
 
+    /// Moves the cursor to the preceding element returning a reference to the new element if one is present, otherwise returning `None`.
+    pub fn peek_move_preceding(&mut self) -> Option<&T> {
+        if self.current == *self.root {
+            None
+        } else if let Some(preceding) = self.preceding {
+            // If we move to a parent node, we add this parent to the guarded nodes to specify that
+            // it cannot be removed (removing it would remove its children which would remove nodes
+            // borrowed by a mutable cursor).
+            if let Preceding::Parent(parent) = preceding {
+                self.guarded_nodes.push(parent);
+            }
+
+            self.current = Some(preceding.unwrap());
+            let temp = unsafe { preceding.unwrap().as_ref() };
+            self.preceding = temp.preceding;
+            Some(&temp.element)
+        } else {
+            None
+        }
+    }
+
     /// Moves the cursor to the preceding element.
     ///
     /// If there is no preceding element the cursor is not moved.
@@ -670,6 +691,20 @@ impl<'a, T> Cursor<'a, T> {
         self.current.map(|ptr| unsafe { &ptr.as_ref().element })
     }
 
+    /// Moves the cursor to the preceding element returning a reference to the new element if one is present, otherwise returning `None`.
+    pub fn peek_move_preceding(&mut self) -> Option<&T> {
+        if self.current == *self.root {
+            None
+        } else if let Some(preceding) = self.preceding {
+            self.current = Some(preceding.unwrap());
+            let temp = unsafe { preceding.unwrap().as_ref() };
+            self.preceding = temp.preceding;
+            Some(&temp.element)
+        } else {
+            None
+        }
+    }
+
     /// Moves the cursor to the preceding element.
     ///
     /// If there is no preceding element the cursor is not moved.
@@ -930,6 +965,20 @@ impl<'a, T> CursorMut<'a, T> {
     #[must_use]
     pub fn current(&self) -> Option<&T> {
         self.current.map(|ptr| unsafe { &ptr.as_ref().element })
+    }
+
+    /// Moves the cursor to the preceding element returning a reference to the new element if one is present, otherwise returning `None`.
+    pub fn peek_move_preceding(&mut self) -> Option<&T> {
+        if self.current == *self.root {
+            None
+        } else if let Some(preceding) = self.preceding {
+            self.current = Some(preceding.unwrap());
+            let temp = unsafe { preceding.unwrap().as_ref() };
+            self.preceding = temp.preceding;
+            Some(&temp.element)
+        } else {
+            None
+        }
     }
 
     /// Moves the cursor to the preceding element.
