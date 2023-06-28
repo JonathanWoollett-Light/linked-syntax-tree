@@ -405,7 +405,9 @@ impl<'a, T> RestrictedCursor<'a, T> {
 
     /// Moves the cursor through preceding elements until reaching a parent, if no parent is found,
     /// the cursor is reset to its original position.
-    pub fn move_parent(&mut self) {
+    ///
+    /// Returns `true` if the cursor was moved to a parent, and `false` if not.
+    pub fn move_parent(&mut self) -> bool {
         let cache_preceding = self.preceding;
         let cache_current = self.current;
         loop {
@@ -422,13 +424,13 @@ impl<'a, T> RestrictedCursor<'a, T> {
 
                     self.current = Some(parent);
                     self.preceding = unsafe { parent.as_ref().preceding };
-                    break;
+                    break true;
                 }
                 None => {
                     self.current = cache_current;
                     self.preceding = cache_preceding;
 
-                    break;
+                    break false;
                 }
             }
         }
@@ -436,21 +438,29 @@ impl<'a, T> RestrictedCursor<'a, T> {
 
     /// Moves the cursor to the successor element if one can be found. If there is no predecessor
     /// element the cursor is reset to its original position and is not moved.
-    pub fn move_successor(&mut self) {
+    /// 
+    /// Returns `true` if the cursor was moved to a successor, and `false` if not.
+    pub fn move_successor(&mut self) -> bool {
         if self.peek_child().is_some() {
             self.move_child();
+            true
         } else if self.peek_next().is_some() {
             self.move_next();
+            true
         } else {
-            self.move_parent();
-
             // If the element has a parent and the cursor was moved to it.
-            if self.current != self.current {
+            if self.move_parent() {
                 if self.peek_child().is_some() {
                     self.move_child();
+                    true
                 } else if self.peek_next().is_some() {
                     self.move_next();
+                    true
+                } else {
+                    false
                 }
+            } else {
+                false
             }
         }
     }
