@@ -55,11 +55,11 @@
 //! cursor.move_parent(); // Moves the cursor to "loop".
 //! cursor.insert_next("x = 2");
 //! assert_eq!(root.to_string(), r#"x = -10
-//! x = 2
 //! loop
 //!     x = x + 1
 //!     if x
 //!         break
+//! x = 2
 //! "#);
 //! ```
 //!
@@ -406,13 +406,16 @@ impl<'a, T> RestrictedCursor<'a, T> {
     /// Moves the cursor through preceding elements until reaching a parent, if no parent is found,
     /// the cursor is reset to its original position.
     ///
-    /// Returns `true` if the cursor was moved to a parent, and `false` if not.
+    /// Returns `true` if the cursor was moved to a parent, or `false` if not.
     pub fn move_parent(&mut self) -> bool {
         let cache_preceding = self.preceding;
         let cache_current = self.current;
         loop {
             match self.preceding {
                 Some(Preceding::Previous(previous)) => {
+                    if Some(previous) == *self.root {
+                        break;
+                    }
                     self.current = Some(previous);
                     self.preceding = unsafe { previous.as_ref().preceding };
                 }
@@ -424,22 +427,20 @@ impl<'a, T> RestrictedCursor<'a, T> {
 
                     self.current = Some(parent);
                     self.preceding = unsafe { parent.as_ref().preceding };
-                    break true;
+                    return true;
                 }
-                None => {
-                    self.current = cache_current;
-                    self.preceding = cache_preceding;
-
-                    break false;
-                }
+                None => break,
             }
         }
+        self.current = cache_current;
+        self.preceding = cache_preceding;
+        false
     }
 
-    /// Moves the cursor to the successor element if one can be found. If there is no predecessor
+    /// Moves the cursor to the successor element if one can be found. If there is no successor
     /// element the cursor is reset to its original position and is not moved.
-    /// 
-    /// Returns `true` if the cursor was moved to a successor, and `false` if not.
+    ///
+    /// Returns `true` if the cursor was moved to a successor, or `false` if not.
     pub fn move_successor(&mut self) -> bool {
         if self.peek_child().is_some() {
             self.move_child();
@@ -465,11 +466,10 @@ impl<'a, T> RestrictedCursor<'a, T> {
         }
     }
 
-    /// Moves the cursor to the predecessor element or the root element if a predecessor is not
-    /// present.
+    /// Moves the cursor to the predecessor element if one can be found. If there is no predecessor
+    /// element the cursor is reset to its original position and is not moved.
     ///
-    /// Returns `true` if the cursor was moved to a predecessor or `false` if it was moved to the
-    /// root element.
+    /// Returns `true` if the cursor was moved to a predecessor, or `false` if not.
     pub fn move_predecessor(&mut self) -> bool {
         match self.peek_preceding() {
             Some(Preceding::Parent(_)) => {
@@ -478,12 +478,18 @@ impl<'a, T> RestrictedCursor<'a, T> {
             }
             Some(Preceding::Previous(_)) => {
                 self.move_preceding();
-                while self.peek_child().is_some() {
-                    self.move_child();
-                    while self.peek_next().is_some() {
-                        self.move_next();
+
+                loop {
+                    if self.peek_child().is_some() {
+                        self.move_child();
+                        while self.peek_next().is_some() {
+                            self.move_next();
+                        }
+                    } else {
+                        break;
                     }
                 }
+
                 true
             }
             None => false,
@@ -688,32 +694,39 @@ impl<'a, T> Cursor<'a, T> {
         }
     }
 
-    /// Moves the cursor through preceding elements until reaching a parent or
-    /// the root element.
+    /// Moves the cursor through preceding elements until reaching a parent, if no parent is found,
+    /// the cursor is reset to its original position.
     ///
-    /// Returns `true` if the cursor was moved to a parent or `false` if it was moved to the root
-    /// element.
+    /// Returns `true` if the cursor was moved to a parent, or `false` if not.
     pub fn move_parent(&mut self) -> bool {
+        let cache_preceding = self.preceding;
+        let cache_current = self.current;
         loop {
             match self.preceding {
                 Some(Preceding::Previous(previous)) => {
+                    if Some(previous) == *self.root {
+                        break;
+                    }
                     self.current = Some(previous);
                     self.preceding = unsafe { previous.as_ref().preceding };
                 }
                 Some(Preceding::Parent(parent)) => {
                     self.current = Some(parent);
                     self.preceding = unsafe { parent.as_ref().preceding };
-                    break true;
+                    return true;
                 }
-                None => break false,
+                None => break,
             }
         }
+        self.preceding = cache_preceding;
+        self.current = cache_current;
+        false
     }
 
-    /// Moves the cursor to the successor element or the root element if a successor is not present.
+    /// Moves the cursor to the successor element if one can be found. If there is no successor
+    /// element the cursor is reset to its original position and is not moved.
     ///
-    /// Returns `true` if the cursor was moved to a successor or `false` if it was moved to the root
-    /// element.
+    /// Returns `true` if the cursor was moved to a successor, or `false` if not.
     pub fn move_successor(&mut self) -> bool {
         if self.peek_child().is_some() {
             self.move_child();
@@ -722,20 +735,27 @@ impl<'a, T> Cursor<'a, T> {
             self.move_next();
             true
         } else {
-            let parent = self.move_parent();
-            let cond = parent && self.peek_next().is_some();
-            if cond {
-                self.move_next();
+            // If the element has a parent and the cursor was moved to it.
+            if self.move_parent() {
+                if self.peek_child().is_some() {
+                    self.move_child();
+                    true
+                } else if self.peek_next().is_some() {
+                    self.move_next();
+                    true
+                } else {
+                    false
+                }
+            } else {
+                false
             }
-            cond
         }
     }
 
-    /// Moves the cursor to the predecessor element or the root element if a predecessor is not
-    /// present.
+    /// Moves the cursor to the predecessor element if one can be found. If there is no predecessor
+    /// element the cursor is reset to its original position and is not moved.
     ///
-    /// Returns `true` if the cursor was moved to a predecessor or `false` if it was moved to the
-    /// root element.
+    /// Returns `true` if the cursor was moved to a predecessor, or `false` if not.
     pub fn move_predecessor(&mut self) -> bool {
         match self.peek_preceding() {
             Some(Preceding::Parent(_)) => {
@@ -744,12 +764,18 @@ impl<'a, T> Cursor<'a, T> {
             }
             Some(Preceding::Previous(_)) => {
                 self.move_preceding();
-                while self.peek_child().is_some() {
-                    self.move_child();
-                    while self.peek_next().is_some() {
-                        self.move_next();
+
+                loop {
+                    if self.peek_child().is_some() {
+                        self.move_child();
+                        while self.peek_next().is_some() {
+                            self.move_next();
+                        }
+                    } else {
+                        break;
                     }
                 }
+
                 true
             }
             None => false,
@@ -924,36 +950,39 @@ impl<'a, T> CursorMut<'a, T> {
         }
     }
 
-    /// Moves the cursor through preceding elements until reaching a parent or
-    /// the root element.
+    /// Moves the cursor through preceding elements until reaching a parent, if no parent is found,
+    /// the cursor is reset to its original position.
     ///
-    /// Returns `true` if the cursor was moved to a parent or `false` if it was moved to the root
-    /// element.
+    /// Returns `true` if the cursor was moved to a parent, or `false` if not.
     pub fn move_parent(&mut self) -> bool {
+        let cache_preceding = self.preceding;
+        let cache_current = self.current;
         loop {
-            if self.current == *self.root {
-                break false;
-            }
-
             match self.preceding {
                 Some(Preceding::Previous(previous)) => {
+                    if Some(previous) == *self.root {
+                        break;
+                    }
                     self.current = Some(previous);
                     self.preceding = unsafe { previous.as_ref().preceding };
                 }
                 Some(Preceding::Parent(parent)) => {
                     self.current = Some(parent);
                     self.preceding = unsafe { parent.as_ref().preceding };
-                    break true;
+                    return true;
                 }
-                None => break false,
+                None => break,
             }
         }
+        self.preceding = cache_preceding;
+        self.current = cache_current;
+        false
     }
 
-    /// Moves the cursor to the successor element or the root element if a successor is not present.
+    /// Moves the cursor to the successor element if one can be found. If there is no successor
+    /// element the cursor is reset to its original position and is not moved.
     ///
-    /// Returns `true` if the cursor was moved to a successor or `false` if it was moved to the root
-    /// element.
+    /// Returns `true` if the cursor was moved to a successor, or `false` if not.
     pub fn move_successor(&mut self) -> bool {
         if self.peek_child().is_some() {
             self.move_child();
@@ -962,20 +991,27 @@ impl<'a, T> CursorMut<'a, T> {
             self.move_next();
             true
         } else {
-            let parent = self.move_parent();
-            let cond = parent && self.peek_next().is_some();
-            if cond {
-                self.move_next();
+            // If the element has a parent and the cursor was moved to it.
+            if self.move_parent() {
+                if self.peek_child().is_some() {
+                    self.move_child();
+                    true
+                } else if self.peek_next().is_some() {
+                    self.move_next();
+                    true
+                } else {
+                    false
+                }
+            } else {
+                false
             }
-            cond
         }
     }
 
-    /// Moves the cursor to the predecessor element or the root element if a predecessor is not
-    /// present.
+    /// Moves the cursor to the predecessor element if one can be found. If there is no predecessor
+    /// element the cursor is reset to its original position and is not moved.
     ///
-    /// Returns `true` if the cursor was moved to a predecessor or `false` if it was moved to the
-    /// root element.
+    /// Returns `true` if the cursor was moved to a predecessor, or `false` if not.
     pub fn move_predecessor(&mut self) -> bool {
         match self.peek_preceding() {
             Some(Preceding::Parent(_)) => {
@@ -984,12 +1020,18 @@ impl<'a, T> CursorMut<'a, T> {
             }
             Some(Preceding::Previous(_)) => {
                 self.move_preceding();
-                while self.peek_child().is_some() {
-                    self.move_child();
-                    while self.peek_next().is_some() {
-                        self.move_next();
+
+                loop {
+                    if self.peek_child().is_some() {
+                        self.move_child();
+                        while self.peek_next().is_some() {
+                            self.move_next();
+                        }
+                    } else {
+                        break;
                     }
                 }
+
                 true
             }
             None => false,
@@ -1943,14 +1985,14 @@ mod tests {
         assert_eq!(cursor.current(), Some(&6));
         assert_eq!(cursor.peek_next(), None);
 
-        cursor.move_parent();
+        assert_eq!(cursor.move_parent(), true);
         assert_eq!(cursor.peek_preceding(), Some(Preceding::Previous(&2)));
         assert_eq!(cursor.current(), Some(&3));
         assert_eq!(cursor.peek_next(), None);
 
-        cursor.move_parent();
-        assert_eq!(cursor.peek_preceding(), None);
-        assert_eq!(cursor.current(), Some(&1));
-        assert_eq!(cursor.peek_next(), Some(&2));
+        assert_eq!(cursor.move_parent(), false);
+        assert_eq!(cursor.peek_preceding(), Some(Preceding::Previous(&2)));
+        assert_eq!(cursor.current(), Some(&3));
+        assert_eq!(cursor.peek_next(), None);
     }
 }
