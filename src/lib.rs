@@ -930,17 +930,17 @@ impl<'a, T> CursorMut<'a, T> {
     }
 
     /// Splits the tree at the current element.
-    pub fn split_next(&mut self) -> OptionalNode<T> {
+    pub fn split_next(&mut self) -> SyntaxTree<T> {
         match self.current {
             Some(mut current) => unsafe {
                 if let Some(next) = current.as_ref().next {
                     current.as_mut().next = None;
-                    Some(next)
+                    SyntaxTree(Some(next))
                 } else {
-                    None
+                    SyntaxTree(None)
                 }
             },
-            None => None,
+            None => SyntaxTree(None),
         }
     }
 
